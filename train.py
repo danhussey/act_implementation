@@ -163,7 +163,7 @@ def main():
     parser = argparse.ArgumentParser(description="Train ACT model")
     parser.add_argument("--data", type=str, required=True, help="Path to HDF5 dataset")
     parser.add_argument("--output-dir", type=str, default="checkpoints", help="Output directory")
-    parser.add_argument("--chunk-size", type=int, default=10, help="Action chunk size")
+    parser.add_argument("--chunk-size", type=int, default=90, help="Action chunk size (ACT paper uses 90)")
     parser.add_argument("--batch-size", type=int, default=32, help="Batch size")
     parser.add_argument("--epochs", type=int, default=100, help="Number of epochs")
     parser.add_argument("--lr", type=float, default=1e-4, help="Learning rate")

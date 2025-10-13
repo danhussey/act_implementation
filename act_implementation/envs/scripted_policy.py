@@ -33,12 +33,15 @@ class ScriptedPickPlacePolicy:
         self,
         approach_height: float = 0.15,
         lift_height: float = 0.25,
-        grasp_threshold: float = 0.05,
+        grasp_threshold: float = 0.06,  # Slightly larger for faster grasping
         placement_height: float = 0.02,
-        position_tolerance: float = 0.05,  # Increased tolerance for faster convergence
+        position_tolerance: float = 0.05,  # Default tolerance
+        position_tolerance_loose: float = 0.08,  # Looser for free space movement
+        position_tolerance_tight: float = 0.03,  # Tighter for precision tasks
         gripper_open_value: float = 1.0,
         gripper_close_value: float = -1.0,
         noise_scale: float = 0.0,
+        speed_multiplier: float = 2.0,  # Speed up movements (2x faster)
     ):
         """
         Initialize scripted policy.
@@ -48,39 +51,48 @@ class ScriptedPickPlacePolicy:
             lift_height: Height to lift object to
             grasp_threshold: Distance threshold to trigger grasping
             placement_height: Height above target to place object
-            position_tolerance: Distance tolerance for waypoint reaching
+            position_tolerance: Default distance tolerance for waypoint reaching
+            position_tolerance_loose: Looser tolerance for free space movement
+            position_tolerance_tight: Tighter tolerance for precision tasks
             gripper_open_value: Action value for open gripper
             gripper_close_value: Action value for closed gripper
             noise_scale: Scale of Gaussian noise to add to actions (for diversity)
+            speed_multiplier: Multiplier for movement speed (1.0 = normal, 2.0 = 2x faster)
         """
         self.approach_height = approach_height
         self.lift_height = lift_height
         self.grasp_threshold = grasp_threshold
         self.placement_height = placement_height
         self.position_tolerance = position_tolerance
+        self.position_tolerance_loose = position_tolerance_loose
+        self.position_tolerance_tight = position_tolerance_tight
         self.gripper_open = gripper_open_value
         self.gripper_close = gripper_close_value
         self.noise_scale = noise_scale
+        self.speed_multiplier = speed_multiplier
 
         self.state = PickPlaceState.APPROACH_OBJECT
         self.target_pos = None
         self.object_grasped = False
+        self.stable_steps = 0  # For early success detection
 
     def reset(self):
         """Reset policy state."""
         self.state = PickPlaceState.APPROACH_OBJECT
         self.target_pos = None
         self.object_grasped = False
+        self.stable_steps = 0
 
     def _compute_waypoint_action(
         self,
         current_pos: np.ndarray,
         target_pos: np.ndarray,
         gripper_action: float,
-        max_delta: float = 0.05,  # Controller output limit
+        max_delta: float = 0.05,  # Base controller output limit
+        adaptive_speed: bool = True,  # Use adaptive speed based on distance
     ) -> np.ndarray:
         """
-        Compute action to move toward target waypoint.
+        Compute action to move toward target waypoint with adaptive speed.
 
         The default Panda controller expects actions in [-1, 1] range which are
         mapped to [-0.05, 0.05] meters. We normalize our deltas accordingly.
@@ -89,7 +101,8 @@ class ScriptedPickPlacePolicy:
             current_pos: Current end-effector position (x, y, z)
             target_pos: Target waypoint position (x, y, z)
             gripper_action: Gripper action value
-            max_delta: Maximum position delta per step (in meters)
+            max_delta: Base maximum position delta per step (in meters)
+            adaptive_speed: If True, move faster when far, slower when close
 
         Returns:
             Action array [dx, dy, dz, droll, dpitch, dyaw, gripper]
@@ -98,9 +111,25 @@ class ScriptedPickPlacePolicy:
         delta = target_pos - current_pos
         distance = np.linalg.norm(delta)
 
+        # Apply speed multiplier and adaptive speed
+        effective_max_delta = max_delta * self.speed_multiplier
+
+        if adaptive_speed:
+            # Move faster when far (up to 2x), slower when very close (down to 0.5x)
+            # Uses smooth sigmoid-like scaling
+            if distance > 0.15:
+                speed_scale = 2.0  # Fast in free space
+            elif distance > 0.08:
+                speed_scale = 1.5  # Medium speed
+            elif distance > 0.03:
+                speed_scale = 1.0  # Normal speed near target
+            else:
+                speed_scale = 0.5  # Slow down for precision
+            effective_max_delta *= speed_scale
+
         # Clip to maximum step size
-        if distance > max_delta:
-            delta = delta / distance * max_delta
+        if distance > effective_max_delta:
+            delta = delta / distance * effective_max_delta
 
         # Add noise for trajectory diversity
         if self.noise_scale > 0:
@@ -109,6 +138,8 @@ class ScriptedPickPlacePolicy:
         # Normalize delta to [-1, 1] range (controller input range)
         # Controller maps [-1, 1] to [-0.05, 0.05] meters
         normalized_delta = delta / 0.05
+        # Clip to ensure within valid range
+        normalized_delta = np.clip(normalized_delta, -1.0, 1.0)
 
         # Combine with gripper action
         # For OSC_POSE: [dx, dy, dz, droll, dpitch, dyaw, gripper]
@@ -118,10 +149,57 @@ class ScriptedPickPlacePolicy:
 
         return action
 
-    def _reached_waypoint(self, current_pos: np.ndarray, target_pos: np.ndarray) -> bool:
-        """Check if current position is close enough to target."""
+    def _reached_waypoint(
+        self,
+        current_pos: np.ndarray,
+        target_pos: np.ndarray,
+        tolerance: Optional[float] = None
+    ) -> bool:
+        """
+        Check if current position is close enough to target.
+
+        Args:
+            current_pos: Current position
+            target_pos: Target position
+            tolerance: Distance tolerance (uses default if None)
+
+        Returns:
+            True if within tolerance
+        """
         distance = np.linalg.norm(target_pos - current_pos)
-        return distance < self.position_tolerance
+        tol = tolerance if tolerance is not None else self.position_tolerance
+        return distance < tol
+
+    def _check_early_success(
+        self,
+        object_pos: Optional[np.ndarray],
+        target_pos: np.ndarray,
+        stability_threshold: int = 10
+    ) -> bool:
+        """
+        Check if task is already complete (object at target for several steps).
+
+        Args:
+            object_pos: Current object position
+            target_pos: Target position
+            stability_threshold: Number of steps object must be stable
+
+        Returns:
+            True if task appears complete
+        """
+        if object_pos is None:
+            return False
+
+        # Check if object is at target
+        distance = np.linalg.norm(object_pos[:2] - target_pos[:2])  # Only check x, y
+        if distance < 0.08:  # Object is near target
+            self.stable_steps += 1
+            if self.stable_steps >= stability_threshold:
+                return True
+        else:
+            self.stable_steps = 0
+
+        return False
 
     def get_action(self, obs: Dict[str, Any]) -> Tuple[np.ndarray, bool]:
         """
@@ -157,6 +235,10 @@ class ScriptedPickPlacePolicy:
                 # Default target position (adjust based on environment)
                 self.target_pos = np.array([0.0, 0.3, 0.82])
 
+        # Early success detection - check if task already complete
+        if self._check_early_success(object_pos, self.target_pos):
+            return np.zeros(7), True
+
         # State machine
         if self.state == PickPlaceState.APPROACH_OBJECT:
             if object_pos is None:
@@ -166,9 +248,19 @@ class ScriptedPickPlacePolicy:
             # Approach from above
             target = object_pos.copy()
             target[2] += self.approach_height
-            action = self._compute_waypoint_action(eef_pos, target, self.gripper_open)
 
-            if self._reached_waypoint(eef_pos, target):
+            # Concurrent action: start closing gripper when getting close
+            distance_to_object = np.linalg.norm(eef_pos - object_pos)
+            if distance_to_object < 0.15:
+                # Close gripper while approaching
+                gripper_action = self.gripper_close * min(1.0, (0.15 - distance_to_object) / 0.1)
+            else:
+                gripper_action = self.gripper_open
+
+            action = self._compute_waypoint_action(eef_pos, target, gripper_action)
+
+            # Use loose tolerance for free space movement
+            if self._reached_waypoint(eef_pos, target, tolerance=self.position_tolerance_loose):
                 self.state = PickPlaceState.GRASP
 
         elif self.state == PickPlaceState.GRASP:
@@ -178,9 +270,9 @@ class ScriptedPickPlacePolicy:
             # Move down to object
             target = object_pos.copy()
             target[2] += 0.02  # Slightly above object surface
-            action = self._compute_waypoint_action(eef_pos, target, self.gripper_open)
+            action = self._compute_waypoint_action(eef_pos, target, self.gripper_close)
 
-            # Check if close enough to grasp
+            # Check if close enough to grasp (use tight tolerance)
             distance = np.linalg.norm(eef_pos - object_pos)
             if distance < self.grasp_threshold:
                 self.state = PickPlaceState.LIFT
@@ -192,25 +284,35 @@ class ScriptedPickPlacePolicy:
             target[2] = self.lift_height
             action = self._compute_waypoint_action(eef_pos, target, self.gripper_close)
 
+            # Use default tolerance for lift
             if eef_pos[2] >= self.lift_height - self.position_tolerance:
                 self.state = PickPlaceState.MOVE_TO_TARGET
 
         elif self.state == PickPlaceState.MOVE_TO_TARGET:
-            # Move to target location at lift height
+            # Move to target location at lift height (use loose tolerance for free space)
             target = self.target_pos.copy()
             target[2] = self.lift_height
             action = self._compute_waypoint_action(eef_pos, target, self.gripper_close)
 
-            if self._reached_waypoint(eef_pos, target):
+            if self._reached_waypoint(eef_pos, target, tolerance=self.position_tolerance_loose):
                 self.state = PickPlaceState.PLACE
 
         elif self.state == PickPlaceState.PLACE:
             # Lower object to placement height
             target = self.target_pos.copy()
             target[2] += self.placement_height
-            action = self._compute_waypoint_action(eef_pos, target, self.gripper_close)
 
-            if self._reached_waypoint(eef_pos, target):
+            # Start opening gripper when close to placement
+            if eef_pos[2] - target[2] < 0.05:
+                # Gradually open gripper as we get close
+                gripper_action = self.gripper_open
+            else:
+                gripper_action = self.gripper_close
+
+            action = self._compute_waypoint_action(eef_pos, target, gripper_action)
+
+            # Use tight tolerance for placement precision
+            if self._reached_waypoint(eef_pos, target, tolerance=self.position_tolerance_tight):
                 self.state = PickPlaceState.RETREAT
 
         elif self.state == PickPlaceState.RETREAT:
@@ -219,7 +321,8 @@ class ScriptedPickPlacePolicy:
             target[2] += 0.1
             action = self._compute_waypoint_action(eef_pos, target, self.gripper_open)
 
-            if self._reached_waypoint(eef_pos, target):
+            # Use loose tolerance for retreat
+            if self._reached_waypoint(eef_pos, target, tolerance=self.position_tolerance_loose):
                 self.state = PickPlaceState.DONE
 
         elif self.state == PickPlaceState.DONE:

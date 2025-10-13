@@ -19,6 +19,7 @@ class RoboSuiteWrapper:
         camera_width: int = 84,
         horizon: int = 500,
         reward_shaping: bool = True,
+        control_freq: int = 50,  # ACT paper uses 50Hz control
     ):
         """
         Initialize RoboSuite environment wrapper.
@@ -32,6 +33,7 @@ class RoboSuiteWrapper:
             camera_width: Width of camera images
             horizon: Maximum episode length
             reward_shaping: Whether to use shaped rewards
+            control_freq: Control frequency in Hz (ACT paper uses 50Hz)
         """
         self.env_name = env_name
         self.robots = robots
@@ -63,6 +65,7 @@ class RoboSuiteWrapper:
             camera_widths=camera_width,
             horizon=horizon,
             reward_shaping=reward_shaping,
+            control_freq=control_freq,  # Set control frequency (ACT paper uses 50Hz)
         )
 
         self.action_dim = self.env.action_spec[0].shape[0]
