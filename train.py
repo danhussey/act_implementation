@@ -56,6 +56,7 @@ def train_epoch(
     optimizer: optim.Optimizer,
     device: torch.device,
     kl_weight: float = 10.0,
+    use_amp: bool = False,
 ) -> dict:
     """Train for one epoch."""
     vision_encoder.train()
@@ -65,6 +66,9 @@ def train_epoch(
     total_recon_loss = 0.0
     total_kl_loss = 0.0
 
+    # Mixed precision training
+    scaler = torch.cuda.amp.GradScaler() if use_amp else None
+
     pbar = tqdm(train_loader, desc="Training")
     for batch in pbar:
         # Move to device
@@ -72,19 +76,25 @@ def train_epoch(
         images = {k: v.to(device) for k, v in batch["images"].items()}
         actions = batch["actions"].to(device)
 
-        # Forward pass
-        visual_features = vision_encoder(images)
-        predicted_actions, mu, logvar = act_model(visual_features, states, actions)
+        # Forward pass with automatic mixed precision
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            visual_features = vision_encoder(images)
+            predicted_actions, mu, logvar = act_model(visual_features, states, actions)
 
-        # Compute loss
-        loss, recon_loss, kl_loss = compute_loss(
-            predicted_actions, actions, mu, logvar, kl_weight
-        )
+            # Compute loss
+            loss, recon_loss, kl_loss = compute_loss(
+                predicted_actions, actions, mu, logvar, kl_weight
+            )
 
         # Backward pass
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        if use_amp:
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            loss.backward()
+            optimizer.step()
 
         # Track metrics
         total_loss += loss.item()
@@ -112,6 +122,7 @@ def validate(
     val_loader: torch.utils.data.DataLoader,
     device: torch.device,
     kl_weight: float = 10.0,
+    use_amp: bool = False,
 ) -> dict:
     """Validate the model."""
     vision_encoder.eval()
@@ -126,14 +137,15 @@ def validate(
         images = {k: v.to(device) for k, v in batch["images"].items()}
         actions = batch["actions"].to(device)
 
-        # Forward pass
-        visual_features = vision_encoder(images)
-        predicted_actions, mu, logvar = act_model(visual_features, states, actions)
+        # Forward pass with automatic mixed precision
+        with torch.cuda.amp.autocast(enabled=use_amp):
+            visual_features = vision_encoder(images)
+            predicted_actions, mu, logvar = act_model(visual_features, states, actions)
 
-        # Compute loss
-        loss, recon_loss, kl_loss = compute_loss(
-            predicted_actions, actions, mu, logvar, kl_weight
-        )
+            # Compute loss
+            loss, recon_loss, kl_loss = compute_loss(
+                predicted_actions, actions, mu, logvar, kl_weight
+            )
 
         total_loss += loss.item()
         total_recon_loss += recon_loss.item()
@@ -163,6 +175,8 @@ def main():
     parser.add_argument("--device", type=str, default="mps", help="Device (cuda/mps/cpu)")
     parser.add_argument("--num-workers", type=int, default=4, help="DataLoader workers")
     parser.add_argument("--save-freq", type=int, default=10, help="Checkpoint save frequency")
+    parser.add_argument("--use-amp", action="store_true", help="Use automatic mixed precision (CUDA only)")
+    parser.add_argument("--compile", action="store_true", help="Use torch.compile for speedup (PyTorch 2.0+)")
     args = parser.parse_args()
 
     # Setup
@@ -208,6 +222,17 @@ def main():
         latent_dim=args.latent_dim,
     ).to(device)
 
+    # Optimize models with torch.compile if requested (PyTorch 2.0+)
+    if args.compile and hasattr(torch, 'compile'):
+        print("Compiling models with torch.compile...")
+        vision_encoder = torch.compile(vision_encoder)
+        act_model = torch.compile(act_model)
+
+    # Enable mixed precision training
+    use_amp = args.use_amp and device.type == "cuda"
+    if use_amp:
+        print("Using automatic mixed precision (AMP) training")
+
     # Optimizer
     params = list(vision_encoder.parameters()) + list(act_model.parameters())
     optimizer = optim.AdamW(params, lr=args.lr, weight_decay=1e-4)
@@ -230,12 +255,12 @@ def main():
 
         # Train
         train_metrics = train_epoch(
-            vision_encoder, act_model, train_loader, optimizer, device, args.kl_weight
+            vision_encoder, act_model, train_loader, optimizer, device, args.kl_weight, use_amp
         )
 
         # Validate
         val_metrics = validate(
-            vision_encoder, act_model, val_loader, device, args.kl_weight
+            vision_encoder, act_model, val_loader, device, args.kl_weight, use_amp
         )
 
         # Log metrics
