@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+ENV/
+env/
+
+# UV
+.python-version
+uv.lock
+
+# Data and outputs
+data/*.hdf5
+data/*.pkl
+checkpoints/*.pt
+checkpoints/*.pth
+logs/
+*.log
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# MuJoCo / RoboSuite
+.mujoco/
