@@ -33,9 +33,9 @@ class ScriptedPickPlacePolicy:
         self,
         approach_height: float = 0.15,
         lift_height: float = 0.25,
-        grasp_threshold: float = 0.02,
+        grasp_threshold: float = 0.05,
         placement_height: float = 0.02,
-        position_tolerance: float = 0.02,
+        position_tolerance: float = 0.05,  # Increased tolerance for faster convergence
         gripper_open_value: float = 1.0,
         gripper_close_value: float = -1.0,
         noise_scale: float = 0.0,
@@ -77,19 +77,22 @@ class ScriptedPickPlacePolicy:
         current_pos: np.ndarray,
         target_pos: np.ndarray,
         gripper_action: float,
-        max_delta: float = 0.05,
+        max_delta: float = 0.05,  # Controller output limit
     ) -> np.ndarray:
         """
         Compute action to move toward target waypoint.
+
+        The default Panda controller expects actions in [-1, 1] range which are
+        mapped to [-0.05, 0.05] meters. We normalize our deltas accordingly.
 
         Args:
             current_pos: Current end-effector position (x, y, z)
             target_pos: Target waypoint position (x, y, z)
             gripper_action: Gripper action value
-            max_delta: Maximum position delta per step
+            max_delta: Maximum position delta per step (in meters)
 
         Returns:
-            Action array [dx, dy, dz, gripper] (for OSC_POSE controller)
+            Action array [dx, dy, dz, droll, dpitch, dyaw, gripper]
         """
         # Compute position delta
         delta = target_pos - current_pos
@@ -103,10 +106,14 @@ class ScriptedPickPlacePolicy:
         if self.noise_scale > 0:
             delta += np.random.randn(3) * self.noise_scale
 
+        # Normalize delta to [-1, 1] range (controller input range)
+        # Controller maps [-1, 1] to [-0.05, 0.05] meters
+        normalized_delta = delta / 0.05
+
         # Combine with gripper action
         # For OSC_POSE: [dx, dy, dz, droll, dpitch, dyaw, gripper]
         action = np.zeros(7)
-        action[:3] = delta
+        action[:3] = normalized_delta
         action[6] = gripper_action
 
         return action
