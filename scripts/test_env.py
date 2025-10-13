@@ -13,6 +13,7 @@ def test_environment():
     env = RoboSuiteWrapper(
         env_name="PickPlaceCan",
         robots="Panda",
+        controller_name=None,  # Use robot's default controller
         camera_names=["agentview", "robot0_eye_in_hand"],
         camera_height=84,
         camera_width=84,

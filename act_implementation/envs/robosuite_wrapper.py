@@ -2,7 +2,7 @@
 
 import numpy as np
 import robosuite as suite
-from robosuite.controllers import load_controller_config
+from robosuite.controllers import load_composite_controller_config
 from typing import Dict, Any, Optional, List
 
 
@@ -13,7 +13,7 @@ class RoboSuiteWrapper:
         self,
         env_name: str = "PickPlaceCan",
         robots: str = "Panda",
-        controller_name: str = "OSC_POSE",
+        controller_name: Optional[str] = None,
         camera_names: Optional[List[str]] = None,
         camera_height: int = 84,
         camera_width: int = 84,
@@ -26,7 +26,7 @@ class RoboSuiteWrapper:
         Args:
             env_name: Name of the RoboSuite task (e.g., "PickPlaceCan")
             robots: Robot type (e.g., "Panda", "Sawyer")
-            controller_name: Controller type (e.g., "OSC_POSE" for end-effector control)
+            controller_name: Controller type (e.g., "BASIC"). If None, uses robot's default.
             camera_names: List of camera names to use for observations
             camera_height: Height of camera images
             camera_width: Width of camera images
@@ -40,8 +40,15 @@ class RoboSuiteWrapper:
         self.camera_height = camera_height
         self.camera_width = camera_width
 
-        # Load controller config
-        controller_config = load_controller_config(default_controller=controller_name)
+        # Load controller config for the robot
+        # Use robot's default controller if controller_name is None
+        if controller_name is None:
+            controller_config = None
+        else:
+            controller_config = load_composite_controller_config(
+                controller=controller_name,
+                robot=robots
+            )
 
         # Create environment
         self.env = suite.make(
