@@ -34,3 +34,10 @@ logs/
 
 # MuJoCo / RoboSuite
 .mujoco/
+
+*.mp4
+*.avi
+
+*.hdf5
+*.part
+*.zip

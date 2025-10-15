@@ -31,33 +31,33 @@ class ScriptedPickPlacePolicy:
 
     def __init__(
         self,
-        approach_height: float = 0.15,
-        lift_height: float = 0.25,
-        grasp_threshold: float = 0.06,  # Slightly larger for faster grasping
-        placement_height: float = 0.02,
-        position_tolerance: float = 0.05,  # Default tolerance
-        position_tolerance_loose: float = 0.08,  # Looser for free space movement
-        position_tolerance_tight: float = 0.03,  # Tighter for precision tasks
+        approach_height: float = 0.12,  # Height above object to approach from
+        lift_height: float = 1.05,  # Absolute height to lift object to (world coordinates)
+        grasp_threshold: float = 0.06,  # Distance threshold to trigger grasping
+        placement_height: float = 0.06,  # Height above bin to place object
+        position_tolerance: float = 0.06,  # Default tolerance (slightly looser)
+        position_tolerance_loose: float = 0.10,  # Looser for free space movement
+        position_tolerance_tight: float = 0.04,  # Tighter for precision tasks
         gripper_open_value: float = 1.0,
         gripper_close_value: float = -1.0,
         noise_scale: float = 0.0,
-        speed_multiplier: float = 2.0,  # Speed up movements (2x faster)
+        speed_multiplier: float = 2.5,  # Speed up movements (2.5x faster)
     ):
         """
         Initialize scripted policy.
 
         Args:
-            approach_height: Height above object to approach from
-            lift_height: Height to lift object to
+            approach_height: Height above object to approach from (relative offset)
+            lift_height: Absolute world Z coordinate to lift object to (e.g., 1.05 for RoboSuite)
             grasp_threshold: Distance threshold to trigger grasping
-            placement_height: Height above target to place object
+            placement_height: Height above target to place object (relative offset)
             position_tolerance: Default distance tolerance for waypoint reaching
             position_tolerance_loose: Looser tolerance for free space movement
             position_tolerance_tight: Tighter tolerance for precision tasks
             gripper_open_value: Action value for open gripper
             gripper_close_value: Action value for closed gripper
             noise_scale: Scale of Gaussian noise to add to actions (for diversity)
-            speed_multiplier: Multiplier for movement speed (1.0 = normal, 2.0 = 2x faster)
+            speed_multiplier: Multiplier for movement speed (1.0 = normal, 2.5 = 2.5x faster)
         """
         self.approach_height = approach_height
         self.lift_height = lift_height
@@ -174,7 +174,7 @@ class ScriptedPickPlacePolicy:
         self,
         object_pos: Optional[np.ndarray],
         target_pos: np.ndarray,
-        stability_threshold: int = 10
+        stability_threshold: int = 15
     ) -> bool:
         """
         Check if task is already complete (object at target for several steps).
@@ -190,9 +190,9 @@ class ScriptedPickPlacePolicy:
         if object_pos is None:
             return False
 
-        # Check if object is at target
+        # Check if object is at target (tighter threshold for actual placement)
         distance = np.linalg.norm(object_pos[:2] - target_pos[:2])  # Only check x, y
-        if distance < 0.08:  # Object is near target
+        if distance < 0.04:  # Object must be very close (4cm) to target
             self.stable_steps += 1
             if self.stable_steps >= stability_threshold:
                 return True
@@ -232,8 +232,21 @@ class ScriptedPickPlacePolicy:
             if "target" in raw_obs:
                 self.target_pos = raw_obs["target"][:3]
             else:
-                # Default target position (adjust based on environment)
-                self.target_pos = np.array([0.0, 0.3, 0.82])
+                # RoboSuite PickPlaceCan has two bins:
+                # bin1: [0.1, -0.25, 0.8]
+                # bin2: [0.1, 0.28, 0.8]
+                # Choose the bin closer to the can
+                bin1_pos = np.array([0.1, -0.25, 0.8])
+                bin2_pos = np.array([0.1, 0.28, 0.8])
+
+                if object_pos is not None:
+                    # Choose bin closest to can's initial position
+                    dist1 = np.linalg.norm(object_pos[:2] - bin1_pos[:2])
+                    dist2 = np.linalg.norm(object_pos[:2] - bin2_pos[:2])
+                    self.target_pos = bin1_pos if dist1 < dist2 else bin2_pos
+                else:
+                    # Default to bin2 if we can't determine
+                    self.target_pos = bin2_pos
 
         # Early success detection - check if task already complete
         if self._check_early_success(object_pos, self.target_pos):
