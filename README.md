@@ -58,6 +58,22 @@ Outputs:
 - `runs/lift_eval/eval_metrics.json`
 - `runs/lift_eval/videos/rollout_*.mp4`
 
+## Sweep Latents
+
+```bash
+uv run python act.py latent-sweep \
+  --checkpoint runs/lift/best.pt \
+  --data data/lift_ph_low_dim.hdf5 \
+  --out-dir runs/lift_latents \
+  --samples 8 \
+  --videos 9 \
+  --device mps
+```
+
+This runs `z=0` plus sampled CVAE latents from the same initial state. Each
+latent is held fixed for the rollout so the saved videos can expose different
+behavior regimes or failure modes.
+
 `lift-ph` is the default because it is the smallest robomimic v1.5 low-dimensional file. `can-ph` is also available:
 
 ```bash

@@ -430,12 +430,17 @@ class ACT(nn.Module):
         self.decoder = nn.TransformerDecoder(dec, 2)
         self.head = nn.Linear(dim, action_dim)
 
-    def forward(self, state: torch.Tensor, actions: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    def forward(
+        self,
+        state: torch.Tensor,
+        actions: torch.Tensor | None = None,
+        z: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Predict a chunk of future actions.
 
         During training, ``actions`` is provided so the latent encoder can learn
         ``q(z | actions, state)``. During inference, ``actions`` is ``None`` and
-        the model uses a zero latent, making predictions deterministic.
+        callers can pass an explicit latent or fall back to ``z=0``.
         """
 
         batch = state.size(0)
@@ -443,7 +448,12 @@ class ACT(nn.Module):
         memory = self.encoder(obs.unsqueeze(1))
         if actions is None:
             mu = logvar = torch.zeros(batch, self.latent_dim, device=state.device)
-            z = mu
+            if z is None:
+                z = mu
+            elif z.dim() == 1:
+                z = z.unsqueeze(0).expand(batch, -1)
+            if z.shape != (batch, self.latent_dim):
+                raise ValueError(f"Expected latent shape {(batch, self.latent_dim)}, got {tuple(z.shape)}")
         else:
             latent = self.latent(torch.cat([actions.flatten(1), obs], dim=1))
             mu, logvar = latent.chunk(2, dim=1)
@@ -590,6 +600,7 @@ def run_policy_episode(
     width: int = 256,
     height: int = 256,
     fps: int = 20,
+    latent: torch.Tensor | None = None,
 ) -> dict:
     """Run one policy attempt, optionally recording it to mp4."""
     obs = reset_env_to_demo_start(env, data_path, demo_name)
@@ -606,14 +617,20 @@ def run_policy_episode(
     total_reward = 0.0
     success = False
     steps = 0
+    first_action = None
+    action_norms = []
     try:
         for step in range(max_steps):
             state = torch.tensor(state_from_env_obs(obs, obs_keys), dtype=torch.float32, device=device).unsqueeze(0)
             state = (state - stats["state_mean"]) / stats["state_std"]
             with torch.no_grad():
-                pred, _, _ = model(state, None)
+                pred, _, _ = model(state, None, z=latent)
             action = pred[0, 0] * stats["action_std"] + stats["action_mean"]
-            obs, reward, done, info = env.step(action.detach().cpu().numpy())
+            action_np = action.detach().cpu().numpy()
+            if first_action is None:
+                first_action = action_np.tolist()
+            action_norms.append(float(np.linalg.norm(action_np)))
+            obs, reward, done, info = env.step(action_np)
             if writer is not None:
                 writer.write(obs[frame_key][::-1])
             total_reward += reward
@@ -631,6 +648,9 @@ def run_policy_episode(
         "reward": total_reward,
         "success": success,
         "video": str(video_path) if video_path is not None else None,
+        "first_action": first_action,
+        "mean_action_norm": float(np.mean(action_norms)) if action_norms else 0.0,
+        "max_action_norm": float(np.max(action_norms)) if action_norms else 0.0,
     }
 
 
@@ -732,6 +752,85 @@ def evaluate(args: argparse.Namespace) -> None:
     print(json.dumps({k: v for k, v in summary.items() if k != "results"} | {"metrics": str(metrics_path)}, indent=2))
 
 
+def latent_sweep(args: argparse.Namespace) -> None:
+    """Evaluate fixed latent choices from the same initial state."""
+    device = torch.device(args.device)
+    checkpoint_path = Path(args.checkpoint)
+    data_path = Path(args.data)
+    out_dir = Path(args.out_dir)
+    videos_dir = out_dir / "videos"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    if args.videos:
+        videos_dir.mkdir(parents=True, exist_ok=True)
+
+    model, stats, obs_keys = load_rollout_assets(checkpoint_path, data_path, device)
+    with h5py.File(data_path, "r") as f:
+        demos = sorted_demo_keys(f["data"].keys())
+    demo_name = demos[args.demo_index]
+
+    latent_specs = []
+    if args.include_zero:
+        latent_specs.append(("zero", torch.zeros(model.latent_dim), "z=0"))
+
+    generator = torch.Generator(device="cpu").manual_seed(args.seed)
+    for index in range(args.samples):
+        latent = torch.randn(model.latent_dim, generator=generator) * args.scale
+        latent_specs.append((f"sample_{index:03d}", latent, f"N(0,{args.scale:g}) sample {index}"))
+
+    env = make_robosuite_env(data_path, args.camera, args.width, args.height, args.max_steps)
+    results = []
+    try:
+        for index, (label, latent_cpu, description) in enumerate(tqdm(latent_specs, desc="Latent sweep")):
+            video_path = None
+            if index < args.videos:
+                video_path = videos_dir / f"{index:03d}_{label}.mp4"
+            latent = latent_cpu.to(device)
+            result = run_policy_episode(
+                model=model,
+                stats=stats,
+                obs_keys=obs_keys,
+                env=env,
+                data_path=data_path,
+                demo_name=demo_name,
+                camera=args.camera,
+                device=device,
+                max_steps=args.max_steps,
+                video_path=video_path,
+                width=args.width,
+                height=args.height,
+                fps=args.fps,
+                latent=latent,
+            )
+            result.update(
+                {
+                    "latent_label": label,
+                    "latent_description": description,
+                    "latent_norm": float(torch.linalg.vector_norm(latent_cpu).item()),
+                    "latent": latent_cpu.tolist(),
+                }
+            )
+            results.append(result)
+    finally:
+        env.close()
+
+    successes = sum(int(item["success"]) for item in results)
+    summary = {
+        "checkpoint": str(checkpoint_path),
+        "data": str(data_path),
+        "demo": demo_name,
+        "samples": len(results),
+        "latent_scale": args.scale,
+        "successes": successes,
+        "success_rate": successes / max(1, len(results)),
+        "avg_reward": float(np.mean([item["reward"] for item in results])) if results else 0.0,
+        "avg_steps": float(np.mean([item["steps"] for item in results])) if results else 0.0,
+        "results": results,
+    }
+    metrics_path = out_dir / "latent_sweep_metrics.json"
+    metrics_path.write_text(json.dumps(summary, indent=2))
+    print(json.dumps({k: v for k, v in summary.items() if k != "results"} | {"metrics": str(metrics_path)}, indent=2))
+
+
 def main() -> None:
     """Command-line entrypoint.
 
@@ -785,6 +884,23 @@ def main() -> None:
     ev.add_argument("--fps", type=int, default=20)
     ev.add_argument("--max-steps", type=int, default=100)
 
+    ls = sub.add_parser("latent-sweep", help="sample fixed CVAE latents from one start state and save comparison rollouts")
+    ls.add_argument("--checkpoint", required=True)
+    ls.add_argument("--data", required=True)
+    ls.add_argument("--out-dir", default="runs/latent_sweep")
+    ls.add_argument("--device", default="cpu")
+    ls.add_argument("--demo-index", type=int, default=0)
+    ls.add_argument("--samples", type=int, default=8, help="number of random latent samples")
+    ls.add_argument("--scale", type=float, default=1.0, help="standard deviation multiplier for sampled latents")
+    ls.add_argument("--seed", type=int, default=0)
+    ls.add_argument("--include-zero", action=argparse.BooleanOptionalAction, default=True)
+    ls.add_argument("--videos", type=int, default=9, help="number of sweep rollouts to save as mp4")
+    ls.add_argument("--camera", default="agentview")
+    ls.add_argument("--width", type=int, default=256)
+    ls.add_argument("--height", type=int, default=256)
+    ls.add_argument("--fps", type=int, default=20)
+    ls.add_argument("--max-steps", type=int, default=100)
+
     args = parser.parse_args()
     if args.cmd == "download":
         download_dataset(args.dataset, args.out, args.force)
@@ -792,8 +908,10 @@ def main() -> None:
         train(args)
     elif args.cmd == "rollout":
         rollout(args)
-    else:
+    elif args.cmd == "evaluate":
         evaluate(args)
+    else:
+        latent_sweep(args)
 
 
 if __name__ == "__main__":
