@@ -19,6 +19,7 @@ import json
 import math
 import shutil
 import subprocess
+import time
 import urllib.request
 from pathlib import Path
 
@@ -513,14 +514,152 @@ def train(args: argparse.Namespace) -> None:
     model = ACT(full.state_dim, full.action_dim, args.chunk_size, args.dim).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
     best = float("inf")
+    best_epoch = 0
+    started_at = time.perf_counter()
+    max_seconds = args.max_minutes * 60 if args.max_minutes is not None else None
+    history_path = out / "history.jsonl"
+    history_path.unlink(missing_ok=True)
     for epoch in range(args.epochs):
         train_loss = run_epoch(model, train_loader, device, optimizer)
         val_loss = run_epoch(model, val_loader, device)
-        print(f"epoch={epoch + 1} train={train_loss:.4f} val={val_loss:.4f}")
+        elapsed_seconds = time.perf_counter() - started_at
+        row = {
+            "epoch": epoch + 1,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "elapsed_seconds": elapsed_seconds,
+        }
+        with history_path.open("a") as f:
+            f.write(json.dumps(row) + "\n")
+        print(f"epoch={epoch + 1} train={train_loss:.4f} val={val_loss:.4f} elapsed={elapsed_seconds / 60:.1f}m")
         if val_loss < best:
             best = val_loss
+            best_epoch = epoch + 1
             torch.save({"model": model.state_dict(), "stats": {k: v.tolist() for k, v in full.stats.items()}, "args": vars(args)}, out / "best.pt")
-    (out / "metrics.json").write_text(json.dumps({"best_val_loss": best, "demos": len(full.demos)}, indent=2))
+        if max_seconds is not None and elapsed_seconds >= max_seconds:
+            break
+    torch.save({"model": model.state_dict(), "stats": {k: v.tolist() for k, v in full.stats.items()}, "args": vars(args)}, out / "last.pt")
+    metrics = {
+        "best_val_loss": best,
+        "best_epoch": best_epoch,
+        "epochs_completed": epoch + 1,
+        "elapsed_seconds": time.perf_counter() - started_at,
+        "demos": len(full.demos),
+    }
+    (out / "metrics.json").write_text(json.dumps(metrics, indent=2))
+
+
+def load_history(path: Path) -> list[dict]:
+    """Load one JSONL training history file."""
+    rows = []
+    for line in path.read_text().splitlines():
+        if line.strip():
+            rows.append(json.loads(line))
+    if not rows:
+        raise ValueError(f"No history rows found in {path}")
+    return rows
+
+
+def make_history_summary(rows: list[dict]) -> dict:
+    """Return compact training observability metrics from history rows."""
+    best = min(rows, key=lambda row: row["val_loss"])
+    last = rows[-1]
+    return {
+        "epochs": len(rows),
+        "elapsed_seconds": last["elapsed_seconds"],
+        "best_epoch": best["epoch"],
+        "best_val_loss": best["val_loss"],
+        "last_epoch": last["epoch"],
+        "last_train_loss": last["train_loss"],
+        "last_val_loss": last["val_loss"],
+        "epochs_per_minute": len(rows) / max(1e-9, last["elapsed_seconds"] / 60),
+    }
+
+
+def write_loss_curve_svg(rows: list[dict], out: Path, title: str) -> None:
+    """Write a small self-contained SVG loss chart without plotting deps."""
+    width, height = 920, 520
+    left, right, top, bottom = 76, 28, 52, 70
+    plot_w = width - left - right
+    plot_h = height - top - bottom
+    epochs = [row["epoch"] for row in rows]
+    train = [row["train_loss"] for row in rows]
+    val = [row["val_loss"] for row in rows]
+    best_so_far = []
+    running = float("inf")
+    for value in val:
+        running = min(running, value)
+        best_so_far.append(running)
+
+    x_min, x_max = min(epochs), max(epochs)
+    y_values = train + val
+    y_min, y_max = min(y_values), max(y_values)
+    pad = (y_max - y_min) * 0.08 or 0.1
+    y_min = max(0.0, y_min - pad)
+    y_max += pad
+
+    def x_scale(epoch: float) -> float:
+        if x_max == x_min:
+            return left + plot_w / 2
+        return left + (epoch - x_min) / (x_max - x_min) * plot_w
+
+    def y_scale(loss: float) -> float:
+        return top + (y_max - loss) / (y_max - y_min) * plot_h
+
+    def points(values: list[float]) -> str:
+        return " ".join(f"{x_scale(epoch):.1f},{y_scale(value):.1f}" for epoch, value in zip(epochs, values))
+
+    y_ticks = [y_min + index * (y_max - y_min) / 5 for index in range(6)]
+    x_ticks = [round(x_min + index * (x_max - x_min) / 5) for index in range(6)]
+    best_index, best_value = min(enumerate(val), key=lambda item: item[1])
+    best_epoch = epochs[best_index]
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        "<style>text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#1f2937} .axis{stroke:#374151;stroke-width:1.4} .grid{stroke:#e5e7eb;stroke-width:1} .train{fill:none;stroke:#2563eb;stroke-width:2.2} .val{fill:none;stroke:#dc2626;stroke-width:2.2} .best{fill:none;stroke:#059669;stroke-width:2;stroke-dasharray:5 5}</style>",
+        '<rect width="100%" height="100%" fill="#fbfaf7"/>',
+        f'<text x="{left}" y="30" font-size="18" font-weight="700">{title}</text>',
+        f'<line class="axis" x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}"/>',
+        f'<line class="axis" x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}"/>',
+    ]
+    for tick in y_ticks:
+        y = y_scale(tick)
+        parts.append(f'<line class="grid" x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}"/>')
+        parts.append(f'<text x="{left - 10}" y="{y + 4:.1f}" font-size="11" text-anchor="end">{tick:.3f}</text>')
+    for tick in x_ticks:
+        x = x_scale(tick)
+        parts.append(f'<line class="grid" x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{top + plot_h}"/>')
+        parts.append(f'<text x="{x:.1f}" y="{top + plot_h + 24}" font-size="11" text-anchor="middle">{tick}</text>')
+    parts.extend(
+        [
+            f'<polyline class="train" points="{points(train)}"/>',
+            f'<polyline class="val" points="{points(val)}"/>',
+            f'<polyline class="best" points="{points(best_so_far)}"/>',
+            f'<circle cx="{x_scale(best_epoch):.1f}" cy="{y_scale(best_value):.1f}" r="4.5" fill="#059669"/>',
+            f'<text x="{left + 4}" y="{height - 26}" font-size="12">epoch</text>',
+            f'<text x="18" y="{top + 18}" font-size="12" transform="rotate(-90 18,{top + 18})">loss</text>',
+            f'<rect x="{left + plot_w - 222}" y="{top + 14}" width="206" height="72" rx="8" fill="#ffffff" stroke="#e5e7eb"/>',
+            f'<line x1="{left + plot_w - 204}" y1="{top + 36}" x2="{left + plot_w - 164}" y2="{top + 36}" class="train"/><text x="{left + plot_w - 154}" y="{top + 40}" font-size="12">train</text>',
+            f'<line x1="{left + plot_w - 204}" y1="{top + 56}" x2="{left + plot_w - 164}" y2="{top + 56}" class="val"/><text x="{left + plot_w - 154}" y="{top + 60}" font-size="12">val</text>',
+            f'<line x1="{left + plot_w - 204}" y1="{top + 76}" x2="{left + plot_w - 164}" y2="{top + 76}" class="best"/><text x="{left + plot_w - 154}" y="{top + 80}" font-size="12">best val</text>',
+            f'<text x="{left}" y="{height - 46}" font-size="12">best val {best_value:.4f} at epoch {best_epoch} | last train {train[-1]:.4f}, val {val[-1]:.4f}</text>',
+            "</svg>",
+        ]
+    )
+    out.write_text("\n".join(parts))
+
+
+def plot_history(args: argparse.Namespace) -> None:
+    """Generate a loss-curve SVG plus summary JSON for a training run."""
+    run_dir = Path(args.run)
+    history_path = Path(args.history) if args.history else run_dir / "history.jsonl"
+    out = Path(args.out) if args.out else run_dir / "loss_curve.svg"
+    summary_path = Path(args.summary) if args.summary else run_dir / "history_summary.json"
+    rows = load_history(history_path)
+    summary = make_history_summary(rows)
+    summary_path.write_text(json.dumps(summary, indent=2))
+    write_loss_curve_svg(rows, out, args.title or run_dir.name)
+    print(json.dumps({"history": str(history_path), "curve": str(out), "summary": str(summary_path), **summary}, indent=2))
 
 
 def load_rollout_assets(checkpoint_path: Path, data_path: Path, device: torch.device) -> tuple[ACT, dict[str, torch.Tensor], list[str]]:
@@ -857,6 +996,7 @@ def main() -> None:
     tr.add_argument("--device", default="cpu")
     tr.add_argument("--seed", type=int, default=0)
     tr.add_argument("--max-demos", type=int, default=20, help="cap demos for a small local run")
+    tr.add_argument("--max-minutes", type=float, default=None, help="stop training after roughly this many minutes")
 
     ro = sub.add_parser("rollout", help="run a trained ACT checkpoint in robosuite and save an mp4")
     ro.add_argument("--checkpoint", required=True)
@@ -901,6 +1041,13 @@ def main() -> None:
     ls.add_argument("--fps", type=int, default=20)
     ls.add_argument("--max-steps", type=int, default=100)
 
+    ph = sub.add_parser("plot-history", help="write an SVG loss curve and JSON summary from a training history")
+    ph.add_argument("--run", required=True, help="run directory containing history.jsonl")
+    ph.add_argument("--history", default=None, help="explicit history.jsonl path")
+    ph.add_argument("--out", default=None, help="output SVG path")
+    ph.add_argument("--summary", default=None, help="output summary JSON path")
+    ph.add_argument("--title", default=None)
+
     args = parser.parse_args()
     if args.cmd == "download":
         download_dataset(args.dataset, args.out, args.force)
@@ -908,6 +1055,8 @@ def main() -> None:
         train(args)
     elif args.cmd == "rollout":
         rollout(args)
+    elif args.cmd == "plot-history":
+        plot_history(args)
     elif args.cmd == "evaluate":
         evaluate(args)
     else:
