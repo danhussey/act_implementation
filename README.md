@@ -58,8 +58,8 @@ flowchart TD
   datasets.
 - An experimental image-observation path for comparing a scratch CNN encoder
   against a frozen pretrained ResNet-18 encoder.
-- Local observability: `metrics.json`, `history.jsonl`, `loss_curve.svg`,
-  rollout metrics, and MP4 videos.
+- Local observability: `metrics.json`, `history.jsonl`, `rollout_history.jsonl`,
+  loss and rollout curves, rollout metrics, and MP4 videos.
 
 ## What This Is Not
 
@@ -231,6 +231,28 @@ uv run --extra vision python act.py train \
 
 The useful comparison is not just loss. Run the same rollout evaluation for
 both checkpoints and compare success rate, failure modes, and MP4/GIF clips.
+For longer runs, add closed-loop probes during training so the run records task
+success as well as supervised train/validation loss:
+
+```bash
+uv run python act.py train \
+  --data data/lift_ph_agentview_20demos.hdf5 \
+  --out runs/lift_vision_scratch_continue \
+  --resume runs/lift_vision_scratch/last.pt \
+  --obs-mode image \
+  --vision-backbone scratch_cnn \
+  --epochs 10000 \
+  --max-minutes 20 \
+  --batch-size 64 \
+  --device mps \
+  --eval-before-train \
+  --eval-every-epochs 50 \
+  --eval-episodes 10 \
+  --eval-max-steps 100
+```
+
+This writes `rollout_history.jsonl`. `plot-history` will also generate
+`rollout_curve.svg` when rollout probes are present.
 
 Current local Lift comparison:
 
@@ -240,6 +262,8 @@ Current local Lift comparison:
 | Scratch-CNN ACT, 20 epochs | `agentview_image` plus robot proprioception | `best.pt` | 10/20 successes |
 | Scratch-CNN ACT, 20 min | `agentview_image` plus robot proprioception | `best.pt` | 5/20 successes |
 | Scratch-CNN ACT, 20 min | `agentview_image` plus robot proprioception | `last.pt` | 9/20 successes |
+| Scratch-CNN ACT, +20 min with rollout probes | `agentview_image` plus robot proprioception | `best.pt` | 12/20 successes |
+| Scratch-CNN ACT, +20 min with rollout probes | `agentview_image` plus robot proprioception | `last.pt` | 14/20 successes |
 
 The scratch-CNN result is intentionally not presented as solved. It is the
 first high-dimensional baseline: less privileged than low-dim, clearly learning
@@ -295,6 +319,8 @@ Training writes:
 - `last.pt`: final checkpoint
 - `metrics.json`: compact run summary
 - `history.jsonl`: one JSON row per epoch
+- `rollout_history.jsonl`: optional closed-loop probes when `--eval-every-epochs`
+  is set
 
 Generate a loss curve:
 
@@ -308,6 +334,8 @@ Outputs:
 
 - `runs/lift_20min/loss_curve.svg`
 - `runs/lift_20min/history_summary.json`
+- `runs/lift_20min/rollout_curve.svg`, if the run has rollout probes
+- `runs/lift_20min/rollout_summary.json`, if the run has rollout probes
 
 ## Try The Can Task
 

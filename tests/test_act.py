@@ -2,6 +2,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import h5py
 import numpy as np
@@ -112,6 +113,34 @@ def test_image_mode_excludes_privileged_object_state(tmp_path: Path) -> None:
     assert dataset.obs_keys == ["robot0_eef_pos", "robot0_eef_quat", "robot0_gripper_qpos"]
     assert dataset.state_dim == 9
     assert dataset.image_shape == (3, 16, 16)
+
+
+def test_plot_history_writes_rollout_curve_when_present(tmp_path: Path) -> None:
+    run = tmp_path / "run"
+    run.mkdir()
+    (run / "history.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"epoch": 1, "train_loss": 0.9, "val_loss": 1.1, "elapsed_seconds": 10.0}),
+                json.dumps({"epoch": 2, "train_loss": 0.7, "val_loss": 0.8, "elapsed_seconds": 20.0}),
+            ]
+        )
+    )
+    (run / "rollout_history.jsonl").write_text(
+        "\n".join(
+            [
+                json.dumps({"epoch": 0, "successes": 1, "episodes": 4, "success_rate": 0.25}),
+                json.dumps({"epoch": 2, "successes": 3, "episodes": 4, "success_rate": 0.75}),
+            ]
+        )
+    )
+
+    act.plot_history(SimpleNamespace(run=str(run), history=None, out=None, summary=None, title="tiny"))
+
+    rollout_summary = json.loads((run / "rollout_summary.json").read_text())
+    assert (run / "loss_curve.svg").exists()
+    assert (run / "rollout_curve.svg").exists()
+    assert rollout_summary["best_rollout_success_rate"] == 0.75
 
 
 def test_walkthrough_notebook_is_valid_json() -> None:

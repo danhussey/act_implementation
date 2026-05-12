@@ -714,6 +714,48 @@ def run_epoch(model: ACT, loader: DataLoader, device: torch.device, optimizer=No
     return total / max(1, len(loader))
 
 
+def checkpoint_payload(model: ACT, dataset: DemoDataset, args: argparse.Namespace) -> dict:
+    """Build the checkpoint dict used by training, rollout, and resume."""
+    return {
+        "model": model.state_dict(),
+        "stats": {k: v.tolist() for k, v in dataset.stats.items()},
+        "args": vars(args),
+        "dataset": dataset.checkpoint_metadata(),
+    }
+
+
+def stats_to_device(stats: dict[str, torch.Tensor], device: torch.device) -> dict[str, torch.Tensor]:
+    """Move normalization stats to the rollout device."""
+    return {key: value.to(device) for key, value in stats.items()}
+
+
+def assert_resume_compatible(checkpoint: dict, dataset: DemoDataset, args: argparse.Namespace) -> None:
+    """Fail early if a resume checkpoint does not match this training setup."""
+    train_args = checkpoint.get("args", {})
+    dataset_meta = checkpoint.get("dataset", {})
+    checks = {
+        "chunk_size": args.chunk_size,
+        "dim": args.dim,
+        "obs_mode": args.obs_mode,
+        "image_key": args.image_key,
+        "vision_backbone": args.vision_backbone,
+        "vision_pretrained": args.vision_pretrained,
+        "freeze_vision": args.freeze_vision,
+    }
+    mismatches = [key for key, value in checks.items() if train_args.get(key, value) != value]
+    if mismatches:
+        joined = ", ".join(mismatches)
+        raise ValueError(f"Resume checkpoint is incompatible with current args: {joined}")
+
+    if dataset_meta.get("obs_keys") and dataset_meta["obs_keys"] != dataset.obs_keys:
+        raise ValueError("Resume checkpoint observation keys do not match the current dataset")
+    for key, value in checkpoint["stats"].items():
+        expected = dataset.stats[key]
+        actual = torch.tensor(value, dtype=torch.float32)
+        if actual.shape != expected.shape or not torch.allclose(actual, expected, atol=1e-5, rtol=1e-5):
+            raise ValueError(f"Resume checkpoint normalization stat '{key}' differs from the current dataset")
+
+
 def train(args: argparse.Namespace) -> None:
     """Train ACT and save the best checkpoint plus a tiny metrics file.
 
@@ -743,13 +785,63 @@ def train(args: argparse.Namespace) -> None:
         vision_pretrained=args.vision_pretrained,
         freeze_vision=args.freeze_vision,
     ).to(device)
+    if args.resume:
+        checkpoint = torch.load(Path(args.resume), map_location=device)
+        assert_resume_compatible(checkpoint, full, args)
+        model.load_state_dict(checkpoint["model"])
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
     best = float("inf")
     best_epoch = 0
     started_at = time.perf_counter()
     max_seconds = args.max_minutes * 60 if args.max_minutes is not None else None
     history_path = out / "history.jsonl"
+    rollout_history_path = out / "rollout_history.jsonl"
     history_path.unlink(missing_ok=True)
+    rollout_history_path.unlink(missing_ok=True)
+
+    def maybe_eval_rollouts(epoch: int, elapsed_seconds: float, tag: str) -> dict | None:
+        if args.eval_episodes <= 0:
+            return None
+        video_dir = out / "rollout_videos" / tag if args.eval_videos else None
+        summary = evaluate_model_rollouts(
+            model=model,
+            stats=stats_to_device(full.stats, device),
+            obs_keys=full.obs_keys,
+            obs_mode=full.obs_mode,
+            image_key=full.image_key,
+            image_shape=full.image_shape,
+            data_path=Path(args.data),
+            device=device,
+            episodes=args.eval_episodes,
+            start_demo_index=args.eval_start_demo_index,
+            camera=args.eval_camera,
+            width=args.eval_width,
+            height=args.eval_height,
+            fps=args.eval_fps,
+            max_steps=args.eval_max_steps,
+            videos=args.eval_videos,
+            video_dir=video_dir,
+            desc=f"Rollout eval {tag}",
+        )
+        rollout_row = {
+            "epoch": epoch,
+            "tag": tag,
+            "elapsed_seconds": elapsed_seconds,
+            **summary,
+        }
+        with rollout_history_path.open("a") as f:
+            f.write(json.dumps(rollout_row) + "\n")
+        return rollout_row
+
+    if args.eval_before_train:
+        rollout_row = maybe_eval_rollouts(0, 0.0, "epoch_0000")
+        if rollout_row is not None:
+            print(
+                f"rollout epoch=0 success={rollout_row['successes']}/{rollout_row['episodes']} "
+                f"rate={rollout_row['success_rate']:.2f}"
+            )
+
     for epoch in range(args.epochs):
         train_loss = run_epoch(model, train_loader, device, optimizer)
         val_loss = run_epoch(model, val_loader, device)
@@ -760,54 +852,64 @@ def train(args: argparse.Namespace) -> None:
             "val_loss": val_loss,
             "elapsed_seconds": elapsed_seconds,
         }
+        should_eval = args.eval_every_epochs > 0 and (epoch + 1) % args.eval_every_epochs == 0
+        if should_eval:
+            rollout_row = maybe_eval_rollouts(epoch + 1, elapsed_seconds, f"epoch_{epoch + 1:04d}")
+            if rollout_row is not None:
+                row.update(
+                    {
+                        "rollout_successes": rollout_row["successes"],
+                        "rollout_episodes": rollout_row["episodes"],
+                        "rollout_success_rate": rollout_row["success_rate"],
+                        "rollout_avg_reward": rollout_row["avg_reward"],
+                        "rollout_avg_steps": rollout_row["avg_steps"],
+                    }
+                )
+                elapsed_seconds = time.perf_counter() - started_at
+                row["elapsed_seconds"] = elapsed_seconds
         with history_path.open("a") as f:
             f.write(json.dumps(row) + "\n")
-        print(f"epoch={epoch + 1} train={train_loss:.4f} val={val_loss:.4f} elapsed={elapsed_seconds / 60:.1f}m")
+        rollout_part = ""
+        if "rollout_success_rate" in row:
+            rollout_part = f" rollout={row['rollout_successes']}/{row['rollout_episodes']} ({row['rollout_success_rate']:.2f})"
+        print(f"epoch={epoch + 1} train={train_loss:.4f} val={val_loss:.4f}{rollout_part} elapsed={elapsed_seconds / 60:.1f}m")
         if val_loss < best:
             best = val_loss
             best_epoch = epoch + 1
-            torch.save(
-                {
-                    "model": model.state_dict(),
-                    "stats": {k: v.tolist() for k, v in full.stats.items()},
-                    "args": vars(args),
-                    "dataset": full.checkpoint_metadata(),
-                },
-                out / "best.pt",
-            )
+            torch.save(checkpoint_payload(model, full, args), out / "best.pt")
         if max_seconds is not None and elapsed_seconds >= max_seconds:
             break
-    torch.save(
-        {
-            "model": model.state_dict(),
-            "stats": {k: v.tolist() for k, v in full.stats.items()},
-            "args": vars(args),
-            "dataset": full.checkpoint_metadata(),
-        },
-        out / "last.pt",
-    )
+    torch.save(checkpoint_payload(model, full, args), out / "last.pt")
     metrics = {
         "best_val_loss": best,
         "best_epoch": best_epoch,
         "epochs_completed": epoch + 1,
         "elapsed_seconds": time.perf_counter() - started_at,
         "demos": len(full.demos),
+        "resume": args.resume,
         "obs_mode": args.obs_mode,
         "image_key": args.image_key if args.obs_mode == "image" else None,
         "vision_backbone": args.vision_backbone if args.obs_mode == "image" else None,
         "vision_pretrained": args.vision_pretrained if args.obs_mode == "image" else None,
+        "rollout_history": str(rollout_history_path) if rollout_history_path.exists() else None,
     }
     (out / "metrics.json").write_text(json.dumps(metrics, indent=2))
 
 
-def load_history(path: Path) -> list[dict]:
-    """Load one JSONL training history file."""
+def load_jsonl(path: Path) -> list[dict]:
+    """Load one non-empty JSONL file."""
     rows = []
     for line in path.read_text().splitlines():
         if line.strip():
             rows.append(json.loads(line))
     if not rows:
-        raise ValueError(f"No history rows found in {path}")
+        raise ValueError(f"No rows found in {path}")
+    return rows
+
+
+def load_history(path: Path) -> list[dict]:
+    """Load one JSONL training history file."""
+    rows = load_jsonl(path)
     return rows
 
 
@@ -824,6 +926,23 @@ def make_history_summary(rows: list[dict]) -> dict:
         "last_train_loss": last["train_loss"],
         "last_val_loss": last["val_loss"],
         "epochs_per_minute": len(rows) / max(1e-9, last["elapsed_seconds"] / 60),
+    }
+
+
+def make_rollout_summary(rows: list[dict]) -> dict:
+    """Return compact closed-loop observability metrics from rollout probes."""
+    best = max(rows, key=lambda row: row["success_rate"])
+    last = rows[-1]
+    return {
+        "rollout_evals": len(rows),
+        "best_rollout_epoch": best["epoch"],
+        "best_rollout_successes": best["successes"],
+        "best_rollout_episodes": best["episodes"],
+        "best_rollout_success_rate": best["success_rate"],
+        "last_rollout_epoch": last["epoch"],
+        "last_rollout_successes": last["successes"],
+        "last_rollout_episodes": last["episodes"],
+        "last_rollout_success_rate": last["success_rate"],
     }
 
 
@@ -900,8 +1019,69 @@ def write_loss_curve_svg(rows: list[dict], out: Path, title: str) -> None:
     out.write_text("\n".join(parts))
 
 
+def write_rollout_curve_svg(rows: list[dict], out: Path, title: str) -> None:
+    """Write a small self-contained SVG rollout success chart."""
+    width, height = 920, 420
+    left, right, top, bottom = 76, 30, 52, 68
+    plot_w = width - left - right
+    plot_h = height - top - bottom
+    epochs = [row["epoch"] for row in rows]
+    rates = [row["success_rate"] for row in rows]
+    x_min, x_max = min(epochs), max(epochs)
+
+    def x_scale(epoch: float) -> float:
+        if x_max == x_min:
+            return left + plot_w / 2
+        return left + (epoch - x_min) / (x_max - x_min) * plot_w
+
+    def y_scale(rate: float) -> float:
+        return top + (1.0 - rate) * plot_h
+
+    def points() -> str:
+        return " ".join(f"{x_scale(epoch):.1f},{y_scale(rate):.1f}" for epoch, rate in zip(epochs, rates))
+
+    y_ticks = [0.0, 0.25, 0.5, 0.75, 1.0]
+    x_ticks = [round(x_min + index * (x_max - x_min) / 5) for index in range(6)]
+    best = max(rows, key=lambda row: row["success_rate"])
+    last = rows[-1]
+
+    parts = [
+        f'<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="{height}" viewBox="0 0 {width} {height}">',
+        "<style>text{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;fill:#1f2937} .axis{stroke:#374151;stroke-width:1.4} .grid{stroke:#e5e7eb;stroke-width:1} .success{fill:none;stroke:#0f766e;stroke-width:2.8} .point{fill:#0f766e;stroke:#fbfaf7;stroke-width:2}</style>",
+        '<rect width="100%" height="100%" fill="#fbfaf7"/>',
+        f'<text x="{left}" y="30" font-size="18" font-weight="700">{title} rollout success</text>',
+        f'<line class="axis" x1="{left}" y1="{top}" x2="{left}" y2="{top + plot_h}"/>',
+        f'<line class="axis" x1="{left}" y1="{top + plot_h}" x2="{left + plot_w}" y2="{top + plot_h}"/>',
+    ]
+    for tick in y_ticks:
+        y = y_scale(tick)
+        parts.append(f'<line class="grid" x1="{left}" y1="{y:.1f}" x2="{left + plot_w}" y2="{y:.1f}"/>')
+        parts.append(f'<text x="{left - 10}" y="{y + 4:.1f}" font-size="11" text-anchor="end">{tick * 100:.0f}%</text>')
+    for tick in x_ticks:
+        x = x_scale(tick)
+        parts.append(f'<line class="grid" x1="{x:.1f}" y1="{top}" x2="{x:.1f}" y2="{top + plot_h}"/>')
+        parts.append(f'<text x="{x:.1f}" y="{top + plot_h + 24}" font-size="11" text-anchor="middle">{tick}</text>')
+    parts.append(f'<polyline class="success" points="{points()}"/>')
+    for row in rows:
+        x = x_scale(row["epoch"])
+        y = y_scale(row["success_rate"])
+        parts.append(f'<circle class="point" cx="{x:.1f}" cy="{y:.1f}" r="5"/>')
+        parts.append(
+            f'<text x="{x:.1f}" y="{max(16, y - 12):.1f}" font-size="11" text-anchor="middle">{row["successes"]}/{row["episodes"]}</text>'
+        )
+    parts.extend(
+        [
+            f'<text x="{left + 4}" y="{height - 24}" font-size="12">epoch</text>',
+            f'<text x="18" y="{top + 18}" font-size="12" transform="rotate(-90 18,{top + 18})">rollout success</text>',
+            f'<text x="{left}" y="{height - 44}" font-size="12">best {best["successes"]}/{best["episodes"]} at epoch {best["epoch"]} | last {last["successes"]}/{last["episodes"]} at epoch {last["epoch"]}</text>',
+            "</svg>",
+        ]
+    )
+    out.write_text("\n".join(parts))
+
+
 def plot_history(args: argparse.Namespace) -> None:
-    """Generate a loss-curve SVG plus summary JSON for a training run."""
+    """Generate loss and rollout observability artifacts for a training run."""
     run_dir = Path(args.run)
     history_path = Path(args.history) if args.history else run_dir / "history.jsonl"
     out = Path(args.out) if args.out else run_dir / "loss_curve.svg"
@@ -910,7 +1090,25 @@ def plot_history(args: argparse.Namespace) -> None:
     summary = make_history_summary(rows)
     summary_path.write_text(json.dumps(summary, indent=2))
     write_loss_curve_svg(rows, out, args.title or run_dir.name)
-    print(json.dumps({"history": str(history_path), "curve": str(out), "summary": str(summary_path), **summary}, indent=2))
+    result = {"history": str(history_path), "curve": str(out), "summary": str(summary_path), **summary}
+
+    rollout_history_path = run_dir / "rollout_history.jsonl"
+    if rollout_history_path.exists() and rollout_history_path.read_text().strip():
+        rollout_rows = load_jsonl(rollout_history_path)
+        rollout_curve = run_dir / "rollout_curve.svg"
+        rollout_summary_path = run_dir / "rollout_summary.json"
+        rollout_summary = make_rollout_summary(rollout_rows)
+        rollout_summary_path.write_text(json.dumps(rollout_summary, indent=2))
+        write_rollout_curve_svg(rollout_rows, rollout_curve, args.title or run_dir.name)
+        result.update(
+            {
+                "rollout_history": str(rollout_history_path),
+                "rollout_curve": str(rollout_curve),
+                "rollout_summary": str(rollout_summary_path),
+                **rollout_summary,
+            }
+        )
+    print(json.dumps(result, indent=2))
 
 
 @dataclass
@@ -1156,6 +1354,80 @@ def run_policy_episode(
     }
 
 
+def evaluate_model_rollouts(
+    model: ACT,
+    stats: dict[str, torch.Tensor],
+    obs_keys: list[str],
+    obs_mode: str,
+    image_key: str,
+    image_shape: tuple[int, int, int] | None,
+    data_path: Path,
+    device: torch.device,
+    episodes: int,
+    start_demo_index: int,
+    camera: str,
+    width: int,
+    height: int,
+    fps: int,
+    max_steps: int,
+    videos: int = 0,
+    video_dir: Path | None = None,
+    desc: str = "Evaluating",
+) -> dict:
+    """Run closed-loop policy attempts from the current in-memory model."""
+    if videos and video_dir is None:
+        raise ValueError("video_dir is required when videos > 0")
+    if video_dir is not None and videos:
+        video_dir.mkdir(parents=True, exist_ok=True)
+
+    with h5py.File(data_path, "r") as f:
+        demos = sorted_demo_keys(f["data"].keys())
+
+    env = make_robosuite_env(data_path, camera, width, height, max_steps)
+    was_training = model.training
+    model.eval()
+    results = []
+    try:
+        for episode in tqdm(range(episodes), desc=desc, leave=False):
+            demo_index = (start_demo_index + episode) % len(demos)
+            demo_name = demos[demo_index]
+            video_path = None
+            if video_dir is not None and episode < videos:
+                video_path = video_dir / f"rollout_{episode:03d}_demo_{demo_index}.mp4"
+            result = run_policy_episode(
+                model=model,
+                stats=stats,
+                obs_keys=obs_keys,
+                obs_mode=obs_mode,
+                image_key=image_key,
+                image_shape=image_shape,
+                env=env,
+                data_path=data_path,
+                demo_name=demo_name,
+                camera=camera,
+                device=device,
+                max_steps=max_steps,
+                video_path=video_path,
+                width=width,
+                height=height,
+                fps=fps,
+            )
+            results.append(result)
+    finally:
+        env.close()
+        model.train(was_training)
+
+    successes = sum(int(item["success"]) for item in results)
+    return {
+        "episodes": episodes,
+        "successes": successes,
+        "success_rate": successes / max(1, episodes),
+        "avg_reward": float(np.mean([item["reward"] for item in results])) if results else 0.0,
+        "avg_steps": float(np.mean([item["steps"] for item in results])) if results else 0.0,
+        "results": results,
+    }
+
+
 def rollout(args: argparse.Namespace) -> None:
     """Run a trained ACT policy in robosuite and save an mp4."""
     device = torch.device(args.device)
@@ -1379,11 +1651,22 @@ def main() -> None:
     tr.add_argument("--seed", type=int, default=0)
     tr.add_argument("--max-demos", type=int, default=20, help="cap demos for a small local run")
     tr.add_argument("--max-minutes", type=float, default=None, help="stop training after roughly this many minutes")
+    tr.add_argument("--resume", default=None, help="checkpoint to warm-start from; optimizer state starts fresh")
     tr.add_argument("--obs-mode", choices=["low_dim", "image"], default="low_dim", help="train from privileged low-dim state or image + robot proprioception")
     tr.add_argument("--image-key", default="agentview_image", help="robomimic image observation key for --obs-mode image")
     tr.add_argument("--vision-backbone", choices=["scratch_cnn", "resnet18"], default="scratch_cnn", help="image encoder used by --obs-mode image")
     tr.add_argument("--vision-pretrained", action="store_true", help="use pretrained torchvision weights when supported by the selected vision backbone")
     tr.add_argument("--freeze-vision", action="store_true", help="freeze the convolutional vision backbone and train only the ACT/projection layers")
+    tr.add_argument("--eval-every-epochs", type=int, default=0, help="run closed-loop rollout eval every N training epochs; 0 disables")
+    tr.add_argument("--eval-before-train", action="store_true", help="record one rollout eval before the first optimizer step")
+    tr.add_argument("--eval-episodes", type=int, default=0, help="number of rollout episodes for each in-training eval")
+    tr.add_argument("--eval-start-demo-index", type=int, default=0)
+    tr.add_argument("--eval-camera", default="agentview")
+    tr.add_argument("--eval-width", type=int, default=128)
+    tr.add_argument("--eval-height", type=int, default=128)
+    tr.add_argument("--eval-fps", type=int, default=20)
+    tr.add_argument("--eval-max-steps", type=int, default=100)
+    tr.add_argument("--eval-videos", type=int, default=0, help="number of rollout MP4s to save for each in-training eval")
 
     ro = sub.add_parser("rollout", help="run a trained ACT checkpoint in robosuite and save an mp4")
     ro.add_argument("--checkpoint", required=True)

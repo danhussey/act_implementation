@@ -57,3 +57,8 @@ artifacts, and next questions by day.
 - Baseline comparison: low-dim Lift 20-minute checkpoint remains much stronger at 18/20 successes (`90%`). The scratch-CNN is learning from pixels but is not yet competitive with privileged low-dim state.
 - Vision artifacts: loss curve at `runs/lift_vision_scratch_20min_20260512/loss_curve.svg`; best-checkpoint videos in `runs/lift_vision_scratch_20min_20260512/eval_20_z0/videos/`.
 - Next question: compare against frozen pretrained ResNet-18 on the same rendered image file, then consider more demos or lighter augmentation before scaling the scratch CNN.
+- Added rollout-aware training: `act.py train` now supports `--resume`, `--eval-before-train`, `--eval-every-epochs`, and `--eval-episodes`; probes write `rollout_history.jsonl`, and `plot-history` writes `rollout_curve.svg` when probes exist.
+- Continued scratch-CNN Lift from `runs/lift_vision_scratch_20min_20260512/last.pt` for another 20 minutes with 10-rollout probes every 50 epochs: `runs/lift_vision_scratch_continue_rollout_20260512`.
+- In-loop rollout probes improved from 4/10 at resume to 7/10 at epochs 200 and 300. Validation loss did not tell the same story: best val was `0.4227` at epoch 270, final val was worse at `0.4581`.
+- Full 20-start eval after continuation: `best.pt` got 12/20 successes (`60%`), while `last.pt` got 14/20 (`70%`) with five MP4s in `runs/lift_vision_scratch_continue_rollout_20260512/eval_20_z0_last/videos/`.
+- Learning: rollout probes are not overkill for this project. They add wall-clock cost, but they directly measure the closed-loop behavior the demo cares about and again prevented over-trusting validation loss.
