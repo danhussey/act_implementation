@@ -66,3 +66,4 @@ artifacts, and next questions by day.
 - Second continuation rollout probes: 7/10 at resume, then 8/10 at epochs 50, 150, and 200; epoch 100 dipped to 7/10. The 10-start probes are useful trend checks but still noisy.
 - Full 20-start eval after the second continuation: `last.pt` got 17/20 successes (`85%`), avg length `57.45`, failing `demo_1`, `demo_7`, and `demo_15`; `best.pt` got 13/20 (`65%`).
 - Current high-level result: the scratch-CNN vision model is now close to the low-dim Lift baseline on the same 20 rendered starts, but still uses only 20 demos and a simple scratch visual encoder.
+- README now surfaces the 17/20 vision result in the main results section, and `docs/vision-results.md` preserves the vision-run progression plus artifact paths.

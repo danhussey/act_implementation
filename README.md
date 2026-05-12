@@ -80,8 +80,16 @@ flowchart TD
         direction LR
         liftEarly["3 epochs<br/>14/20"]
         liftMid["20 epochs<br/>10/20"]
-        liftLong["20 minutes<br/>18/20"]
+        liftLong["low-dim 20 min<br/>18/20"]
         liftEarly --> liftMid --> liftLong
+    end
+
+    subgraph visionLift["Lift from pixels"]
+        direction LR
+        visionSmoke["scratch CNN 20 epochs<br/>10/20"]
+        visionFirst["scratch CNN +20 min<br/>14/20"]
+        visionLong["scratch CNN +40 min<br/>17/20"]
+        visionSmoke --> visionFirst --> visionLong
     end
 
     subgraph canTask["Can task"]
@@ -97,15 +105,17 @@ flowchart TD
     classDef strong fill:#ecfff2,stroke:#2f855a,color:#1f2c24
 
     class liftEarly,canSmoke weak
-    class liftMid,canBest mid
-    class liftLong,canLast strong
+    class liftMid,canBest,visionSmoke mid
+    class liftLong,canLast,visionFirst,visionLong strong
 ```
 
 | Task | Run | Checkpoint | Horizon | Success | Readout |
 | --- | --- | --- | ---: | ---: | --- |
 | `lift-ph` | 3 epochs | `best.pt` | 100 | 14/20 | Minimal training already learns some behavior from low-dim state. |
 | `lift-ph` | 20 epochs | `best.pt` | 100 | 10/20 | Better validation loss, worse closed-loop behavior. |
-| `lift-ph` | 20 minutes | `best.pt` | 100 | 18/20 | Strongest lift run so far. |
+| `lift-ph` | low-dim 20 minutes | `best.pt` | 100 | 18/20 | Strongest privileged-state Lift run so far. |
+| `lift-ph-image` | scratch CNN, 20 epochs | `best.pt` | 100 | 10/20 | First high-dimensional baseline from pixels plus proprioception. |
+| `lift-ph-image` | scratch CNN, +40 minutes | `last.pt` | 100 | 17/20 | Best vision run so far, close to the low-dim baseline. |
 | `can-ph` | 1 epoch smoke | `best.pt` | 200 | 1/20 | Barely trained baseline. |
 | `can-ph` | 6 hr validation-best | `best.pt` | 200 | 7/20 | Lowest validation loss checkpoint was not the best actor. |
 | `can-ph` | 6 hr final | `last.pt` | 200 | 18/20 | Strongest can run so far. |
@@ -124,6 +134,8 @@ Two useful lessons showed up quickly:
   policy actually complete the task when its own actions affect the next state?
 - For `can-ph`, the validation-best checkpoint was not rollout-best. The final
   checkpoint had worse validation loss but much better policy behavior.
+- The same pattern showed up in vision Lift: the scratch-CNN final checkpoint
+  reached 17/20 successes, while its validation-best checkpoint reached 13/20.
 
 ## Rollout Clips
 
@@ -391,6 +403,8 @@ uv run python act.py latent-sweep \
   shapes.
 - [tests/test_act.py](tests/test_act.py): lightweight smoke tests.
 - [docs/work-log.md](docs/work-log.md): concise dated experiment notes.
+- [docs/vision-results.md](docs/vision-results.md): compact vision-run metrics
+  and artifact paths.
 
 Generated datasets, checkpoints, logs, and videos live under `data/` and
 `runs/`; both are ignored by git.
