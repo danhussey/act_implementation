@@ -62,3 +62,7 @@ artifacts, and next questions by day.
 - In-loop rollout probes improved from 4/10 at resume to 7/10 at epochs 200 and 300. Validation loss did not tell the same story: best val was `0.4227` at epoch 270, final val was worse at `0.4581`.
 - Full 20-start eval after continuation: `best.pt` got 12/20 successes (`60%`), while `last.pt` got 14/20 (`70%`) with five MP4s in `runs/lift_vision_scratch_continue_rollout_20260512/eval_20_z0_last/videos/`.
 - Learning: rollout probes are not overkill for this project. They add wall-clock cost, but they directly measure the closed-loop behavior the demo cares about and again prevented over-trusting validation loss.
+- Continued scratch-CNN Lift for another 20 minutes from the previous final checkpoint: `runs/lift_vision_scratch_continue2_rollout_20260512`, 227 epochs, best val loss `0.4231` at epoch 151, final val `0.4454`.
+- Second continuation rollout probes: 7/10 at resume, then 8/10 at epochs 50, 150, and 200; epoch 100 dipped to 7/10. The 10-start probes are useful trend checks but still noisy.
+- Full 20-start eval after the second continuation: `last.pt` got 17/20 successes (`85%`), avg length `57.45`, failing `demo_1`, `demo_7`, and `demo_15`; `best.pt` got 13/20 (`65%`).
+- Current high-level result: the scratch-CNN vision model is now close to the low-dim Lift baseline on the same 20 rendered starts, but still uses only 20 demos and a simple scratch visual encoder.

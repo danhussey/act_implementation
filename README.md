@@ -264,6 +264,8 @@ Current local Lift comparison:
 | Scratch-CNN ACT, 20 min | `agentview_image` plus robot proprioception | `last.pt` | 9/20 successes |
 | Scratch-CNN ACT, +20 min with rollout probes | `agentview_image` plus robot proprioception | `best.pt` | 12/20 successes |
 | Scratch-CNN ACT, +20 min with rollout probes | `agentview_image` plus robot proprioception | `last.pt` | 14/20 successes |
+| Scratch-CNN ACT, +40 min with rollout probes | `agentview_image` plus robot proprioception | `best.pt` | 13/20 successes |
+| Scratch-CNN ACT, +40 min with rollout probes | `agentview_image` plus robot proprioception | `last.pt` | 17/20 successes |
 
 The scratch-CNN result is intentionally not presented as solved. It is the
 first high-dimensional baseline: less privileged than low-dim, clearly learning
