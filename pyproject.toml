@@ -1,16 +1,21 @@
 [project]
-name = "act-implementation"
-version = "0.1.0"
-description = "Add your description here"
+name = "act-one-file"
+version = "1.0.0"
+description = "Minimal one-file ACT behavior cloning demo."
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "gdown>=5.2.0",
     "h5py>=3.14.0",
     "numpy>=2.3.3",
-    "pyyaml>=6.0.3",
     "robosuite>=1.5.1",
-    "tensorboard>=2.20.0",
     "torch>=2.8.0",
-    "torchvision>=0.23.0",
     "tqdm>=4.67.1",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

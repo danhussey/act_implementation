@@ -1,80 +1,292 @@
-# ACT Implementation
+# ACT in One File
 
-In this repo I'm reimplementing the Action Chunking Transformer paper from scratch, to perform a Pick Place task.
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![PyTorch](https://img.shields.io/badge/PyTorch-ACT%20demo-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
+[![robomimic](https://img.shields.io/badge/data-robomimic-2F855A)](https://robomimic.github.io/)
+[![uv](https://img.shields.io/badge/env-uv-4B32C3)](https://github.com/astral-sh/uv)
+[![tests](https://img.shields.io/badge/tests-pytest-0A7C66)](https://docs.pytest.org/)
 
-## Project Structure
+A small, readable PyTorch reimplementation of an ACT-style behavior cloning
+loop for robomimic demonstrations.
 
+This is meant to be a friendly demo project: compact enough to read in one
+sitting, but real enough to download public robot data, train a transformer
+policy, roll it out in robosuite, save MP4s, and inspect the training curves.
+
+## How The Demo Works
+
+Training uses expert demonstrations: at each timestep the dataset contains the
+robot/object state and the action the expert took. ACT learns to predict a
+short chunk of future actions from the current state. Evaluation is different:
+the learned policy controls the simulator step by step, and we count whether
+the task actually succeeds.
+
+```mermaid
+flowchart TD
+    demos["1. Load expert demos<br/>robomimic HDF5 files"]
+    samples["2. Build training samples<br/>current state -> next action chunk"]
+    train["3. Train ACT policy<br/>predict chunk, compare to expert chunk"]
+    checkpoints["4. Save checkpoints<br/>best validation loss + final model"]
+    rollout["5. Roll out in simulator<br/>policy controls robot step by step"]
+    score["6. Score behavior<br/>success count, rewards, MP4/GIF clips"]
+    note["Current simplification<br/>object pose is provided as numbers;<br/>camera vision is not used yet"]
+
+    demos --> samples --> train --> checkpoints --> rollout --> score
+    note -.-> samples
+
+    classDef data fill:#fff4d8,stroke:#d5a947,color:#1f2c24
+    classDef model fill:#e8f1ff,stroke:#6684c7,color:#1f2c24
+    classDef eval fill:#e8f7ed,stroke:#4f9a66,color:#1f2c24
+    classDef callout fill:#fffaf0,stroke:#d8c58a,color:#1f2c24,stroke-dasharray:5 4
+
+    class demos,samples data
+    class train,checkpoints model
+    class rollout,score eval
+    class note callout
 ```
-act_implementation/
-├── models/          # Vision encoder, ACT transformer, CVAE
-├── data/            # Dataset loading and preprocessing
-├── envs/            # RoboSuite environment wrapper and scripted policy
-├── utils/           # Utility functions
-collect_demos.py     # Data collection script
-train.py             # Training script
-eval.py              # Evaluation script with temporal ensembling
+
+## What This Is
+
+- A one-file training and evaluation script: [act.py](act.py).
+- A compact Action Chunking Transformer-style policy that predicts chunks of
+  future robot actions.
+- A CVAE-style latent path for multimodal action chunks.
+- A robomimic low-dimensional demo pipeline using public `lift-ph` and `can-ph`
+  datasets.
+- Local observability: `metrics.json`, `history.jsonl`, `loss_curve.svg`,
+  rollout metrics, and MP4 videos.
+
+## What This Is Not
+
+This repo currently trains from privileged low-dimensional simulator state, not
+camera images. That keeps the demo practical on a laptop and makes the ACT
+training loop easy to understand. A vision-based ACT would need image
+observations plus a visual encoder.
+
+## Recent Results
+
+These numbers are from deterministic `z=0` rollouts started from demonstration
+initial simulator states. For ACT's CVAE latent, `z=0` means "do not sample a
+random behavior style; use the center of the latent space."
+
+```mermaid
+flowchart TD
+    subgraph liftTask["Lift task"]
+        direction LR
+        liftEarly["3 epochs<br/>14/20"]
+        liftMid["20 epochs<br/>10/20"]
+        liftLong["20 minutes<br/>18/20"]
+        liftEarly --> liftMid --> liftLong
+    end
+
+    subgraph canTask["Can task"]
+        direction LR
+        canSmoke["1 epoch smoke<br/>1/20"]
+        canBest["6 hr validation-best<br/>7/20"]
+        canLast["6 hr final<br/>18/20"]
+        canSmoke --> canBest --> canLast
+    end
+
+    classDef weak fill:#fff1f1,stroke:#c05656,color:#1f2c24
+    classDef mid fill:#fff7df,stroke:#c9972b,color:#1f2c24
+    classDef strong fill:#ecfff2,stroke:#2f855a,color:#1f2c24
+
+    class liftEarly,canSmoke weak
+    class liftMid,canBest mid
+    class liftLong,canLast strong
 ```
 
-## Setup
+| Task | Run | Checkpoint | Horizon | Success | Readout |
+| --- | --- | --- | ---: | ---: | --- |
+| `lift-ph` | 3 epochs | `best.pt` | 100 | 14/20 | Minimal training already learns some behavior from low-dim state. |
+| `lift-ph` | 20 epochs | `best.pt` | 100 | 10/20 | Better validation loss, worse closed-loop behavior. |
+| `lift-ph` | 20 minutes | `best.pt` | 100 | 18/20 | Strongest lift run so far. |
+| `can-ph` | 1 epoch smoke | `best.pt` | 200 | 1/20 | Barely trained baseline. |
+| `can-ph` | 6 hr validation-best | `best.pt` | 200 | 7/20 | Lowest validation loss checkpoint was not the best actor. |
+| `can-ph` | 6 hr final | `last.pt` | 200 | 18/20 | Strongest can run so far. |
 
-Install dependencies using UV:
+Here, "validation-best" means the checkpoint with the lowest supervised loss on
+held-out expert action chunks. "Final" means the checkpoint from the end of the
+training run. The can result is a useful warning: the model that best matches
+held-out action chunks is not always the model that completes the task most
+often when it controls the simulator.
+
+Two useful lessons showed up quickly:
+
+- Supervised validation loss is useful for debugging whether the model is
+  learning from demonstrations.
+- Closed-loop rollout success answers the more important demo question: can the
+  policy actually complete the task when its own actions affect the next state?
+- For `can-ph`, the validation-best checkpoint was not rollout-best. The final
+  checkpoint had worse validation loss but much better policy behavior.
+
+## Rollout Clips
+
+These GIFs are generated from saved rollout MP4s. Each row uses the same task
+and the same demonstration start state, so the comparison is about the policy
+checkpoint, not a different initial scene.
+
+| Earlier checkpoint | Later checkpoint |
+| :---: | :---: |
+| **Lift demo_10, 3 epochs: fails**<br><img src="docs/assets/lift_demo10_3ep_failure.gif" alt="Lift rollout failure from the 3-epoch checkpoint" width="240"> | **Lift demo_10, 20 minutes: succeeds**<br><img src="docs/assets/lift_demo10_20min_success.gif" alt="Lift rollout success from the 20-minute checkpoint" width="240"> |
+| **Can demo_1, 1 epoch: fails**<br><img src="docs/assets/can_demo1_1ep_failure.gif" alt="Can rollout failure from the 1-epoch checkpoint" width="240"> | **Can demo_1, 6 hr final: succeeds**<br><img src="docs/assets/can_demo1_6hr_success.gif" alt="Can rollout success from the 6-hour final checkpoint" width="240"> |
+
+## Quick Start
+
+Install dependencies:
+
 ```bash
-uv sync
+uv sync --group dev
 ```
 
-## Usage
+Download the small lift dataset:
 
-### 1. Collect Demonstrations
-
-Generate synthetic demonstrations using the scripted policy:
 ```bash
-uv run python collect_demos.py --env PickPlaceCan --episodes 100 --output data/demos.hdf5
+uv run python act.py download --dataset lift-ph
 ```
 
-### 2. Train ACT Model
+Train a quick local policy:
 
-Train the model on collected demonstrations:
 ```bash
-uv run python train.py --data data/demos.hdf5 --epochs 100 --device mps
+uv run python act.py train \
+  --data data/lift_ph_low_dim.hdf5 \
+  --out runs/lift \
+  --epochs 3 \
+  --batch-size 64 \
+  --device mps
 ```
 
-For CUDA (on remote PC):
+Use `--device cpu` if you are not on Apple Silicon. Use `--device cuda` if your
+PyTorch install has CUDA support.
+
+## Roll Out A Policy
+
+Save one MP4:
+
 ```bash
-uv run python train.py --data data/demos.hdf5 --epochs 100 --device cuda
+uv run python act.py rollout \
+  --checkpoint runs/lift/best.pt \
+  --data data/lift_ph_low_dim.hdf5 \
+  --out runs/lift/rollout.mp4 \
+  --device mps
 ```
 
-Monitor training with TensorBoard:
+Run a batch of closed-loop attempts:
+
 ```bash
-tensorboard --logdir logs
+uv run python act.py evaluate \
+  --checkpoint runs/lift/best.pt \
+  --data data/lift_ph_low_dim.hdf5 \
+  --out-dir runs/lift_eval \
+  --episodes 20 \
+  --videos 3 \
+  --device mps
 ```
 
-### 3. Evaluate Policy
+Outputs:
 
-Evaluate the trained policy with temporal ensembling:
+- `runs/lift_eval/eval_metrics.json`
+- `runs/lift_eval/videos/rollout_*.mp4`
+
+## Train Longer
+
+For a more meaningful demo run, train by wall-clock time and keep a full loss
+history:
+
 ```bash
-uv run python eval.py --checkpoint checkpoints/best_model.pt --data data/demos.hdf5 --episodes 50
+uv run python act.py train \
+  --data data/lift_ph_low_dim.hdf5 \
+  --out runs/lift_20min \
+  --epochs 10000 \
+  --max-minutes 20 \
+  --batch-size 64 \
+  --device mps
 ```
 
-## Key Features
+Training writes:
 
-- **Action Chunking**: Predicts sequences of future actions for temporal consistency
-- **CVAE**: Conditional VAE for handling multimodal action distributions
-- **Temporal Ensembling**: Averages overlapping action predictions during inference
-- **Cross-Platform**: Supports MPS (macOS), CUDA (Linux), and CPU
-- **Vision Encoder**: ResNet-based encoder with spatial softmax option
-- **Scripted Data Collection**: Automated demonstration generation
+- `best.pt`: checkpoint with the lowest validation loss
+- `last.pt`: final checkpoint
+- `metrics.json`: compact run summary
+- `history.jsonl`: one JSON row per epoch
 
-## Model Architecture
+Generate a loss curve:
 
-- **Vision Encoder**: ResNet18 backbone for processing multi-camera RGB observations
-- **Transformer**: 4-layer encoder-decoder with 8 attention heads
-- **CVAE**: 32-dimensional latent space for action distribution modeling
-- **Chunk Size**: 10 timesteps (configurable)
+```bash
+uv run python act.py plot-history \
+  --run runs/lift_20min \
+  --title lift_20min
+```
 
-## Training Details
+Outputs:
 
-- **Loss**: MSE reconstruction + KL divergence (weight=10.0)
-- **Optimizer**: AdamW with cosine annealing
-- **Learning Rate**: 1e-4
-- **Batch Size**: 32
-- **Normalization**: State and action normalization using dataset statistics
+- `runs/lift_20min/loss_curve.svg`
+- `runs/lift_20min/history_summary.json`
+
+## Try The Can Task
+
+`can-ph` is larger and harder than `lift-ph`:
+
+```bash
+uv run python act.py download --dataset can-ph
+uv run python act.py train \
+  --data data/can_ph_low_dim.hdf5 \
+  --out runs/can \
+  --epochs 10000 \
+  --max-minutes 60 \
+  --batch-size 64 \
+  --max-demos 100000 \
+  --device mps
+```
+
+Evaluate with a longer horizon:
+
+```bash
+uv run python act.py evaluate \
+  --checkpoint runs/can/last.pt \
+  --data data/can_ph_low_dim.hdf5 \
+  --out-dir runs/can_eval \
+  --episodes 20 \
+  --videos 5 \
+  --max-steps 200 \
+  --device mps
+```
+
+## Explore Latents
+
+ACT uses a latent variable during training to represent different plausible
+action chunks. This command compares `z=0` with sampled latents from the same
+initial state:
+
+```bash
+uv run python act.py latent-sweep \
+  --checkpoint runs/lift/best.pt \
+  --data data/lift_ph_low_dim.hdf5 \
+  --out-dir runs/lift_latents \
+  --samples 8 \
+  --videos 9 \
+  --device mps
+```
+
+## Repo Map
+
+- [act.py](act.py): download, dataset, model, train, plot, rollout, evaluate.
+- [ACT_walkthrough.ipynb](ACT_walkthrough.ipynb): step-by-step walkthrough with
+  shapes.
+- [tests/test_act.py](tests/test_act.py): lightweight smoke tests.
+- [docs/work-log.md](docs/work-log.md): concise dated experiment notes.
+
+Generated datasets, checkpoints, logs, and videos live under `data/` and
+`runs/`; both are ignored by git.
+
+## Development
+
+Run tests:
+
+```bash
+uv run pytest -q
+```
+
+The project is intentionally small. If you are reading this to learn ACT, start
+with [act.py](act.py), then run a short `lift-ph` training job and watch one
+rollout video. That loop gives the fastest intuition.
