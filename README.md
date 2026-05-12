@@ -174,15 +174,27 @@ privileged robomimic `object` state vector.
 uv run python act.py download --dataset lift-ph-image
 ```
 
+The downloaded file is a raw robomimic state/action file. Render a compact
+image-observation training file before training:
+
+```bash
+uv run python act.py render-images \
+  --data data/lift_ph_image.hdf5 \
+  --out data/lift_ph_agentview_20demos.hdf5 \
+  --max-demos 20 \
+  --width 128 \
+  --height 128
+```
+
 Train the scratch-CNN version:
 
 ```bash
 uv run python act.py train \
-  --data data/lift_ph_image.hdf5 \
+  --data data/lift_ph_agentview_20demos.hdf5 \
   --out runs/lift_vision_scratch \
   --obs-mode image \
   --vision-backbone scratch_cnn \
-  --epochs 3 \
+  --epochs 20 \
   --batch-size 64 \
   --device mps
 ```
@@ -192,7 +204,7 @@ Evaluate it the same way as the low-dimensional checkpoint:
 ```bash
 uv run python act.py evaluate \
   --checkpoint runs/lift_vision_scratch/best.pt \
-  --data data/lift_ph_image.hdf5 \
+  --data data/lift_ph_agentview_20demos.hdf5 \
   --out-dir runs/lift_vision_scratch_eval \
   --episodes 20 \
   --videos 3 \
@@ -206,19 +218,32 @@ pretrained ResNet-18 image encoder:
 uv sync --group dev --extra vision
 
 uv run --extra vision python act.py train \
-  --data data/lift_ph_image.hdf5 \
+  --data data/lift_ph_agentview_20demos.hdf5 \
   --out runs/lift_vision_resnet18_frozen \
   --obs-mode image \
   --vision-backbone resnet18 \
   --vision-pretrained \
   --freeze-vision \
-  --epochs 3 \
+  --epochs 20 \
   --batch-size 64 \
   --device mps
 ```
 
 The useful comparison is not just loss. Run the same rollout evaluation for
 both checkpoints and compare success rate, failure modes, and MP4/GIF clips.
+
+Current local Lift comparison:
+
+| Policy | Observation | Checkpoint | Rollout result |
+| --- | --- | --- | --- |
+| Low-dim ACT, 20 min | Robot state plus privileged object state | `best.pt` | 18/20 successes |
+| Scratch-CNN ACT, 20 epochs | `agentview_image` plus robot proprioception | `best.pt` | 10/20 successes |
+| Scratch-CNN ACT, 20 min | `agentview_image` plus robot proprioception | `best.pt` | 5/20 successes |
+| Scratch-CNN ACT, 20 min | `agentview_image` plus robot proprioception | `last.pt` | 9/20 successes |
+
+The scratch-CNN result is intentionally not presented as solved. It is the
+first high-dimensional baseline: less privileged than low-dim, clearly learning
+something, and currently more brittle.
 
 ## Roll Out A Policy
 

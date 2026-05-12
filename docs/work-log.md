@@ -49,3 +49,11 @@ artifacts, and next questions by day.
 - README now includes compact rollout GIFs generated from saved MP4s: lift 3-epoch failure vs 20-minute success on `demo_10`, and can 1-epoch failure vs 6-hour final success on `demo_1`.
 - Started vision ACT path on branch `codex/vision-encoder`: image-mode training uses `agentview_image` plus robot proprioception and excludes the privileged `object` state vector.
 - Added comparison knobs for `scratch_cnn` versus optional pretrained frozen `resnet18`; next useful metric is rollout success against the existing low-dim baseline, not just validation loss.
+- Downloaded `lift-ph-image` raw demo file (`data/lift_ph_image.hdf5`, 200 demos, 35 MB). Surprise: it stores raw simulator `states` and `actions`, not pre-rendered `obs`; added `act.py render-images` to create compact image-observation HDF5 files before vision training.
+- Rendered 20 Lift image demos at 128x128 from simulator states: `data/lift_ph_agentview_20demos.hdf5`, 1042 samples, about 17s after changing render reset to once per demo instead of once per timestep.
+- Scratch-CNN 20-epoch smoke: `runs/lift_vision_scratch_20demos_20260512`, best val loss `0.4313`, z=0 rollout eval 10/20 successes (`50%`), matching the old low-dim 20-epoch count but on different starts.
+- Scratch-CNN 20-minute run: `runs/lift_vision_scratch_20min_20260512`, 343 epochs in `1200.6s`, best val loss `0.3338` at epoch 80, final train loss `0.0649`, final val loss `0.4277`.
+- Scratch-CNN 20-minute rollout eval: validation-best `best.pt` got 5/20 successes (`25%`), while `last.pt` got 9/20 (`45%`). This repeats the can-task lesson: validation loss can pick a worse closed-loop policy.
+- Baseline comparison: low-dim Lift 20-minute checkpoint remains much stronger at 18/20 successes (`90%`). The scratch-CNN is learning from pixels but is not yet competitive with privileged low-dim state.
+- Vision artifacts: loss curve at `runs/lift_vision_scratch_20min_20260512/loss_curve.svg`; best-checkpoint videos in `runs/lift_vision_scratch_20min_20260512/eval_20_z0/videos/`.
+- Next question: compare against frozen pretrained ResNet-18 on the same rendered image file, then consider more demos or lighter augmentation before scaling the scratch CNN.

@@ -156,7 +156,7 @@ def proprio_obs_keys(obs: h5py.Group) -> list[str]:
     a real robot, while object pose is not.
     """
 
-    keys = [key for key in lowdim_obs_keys(obs) if key.startswith("robot")]
+    keys = [key for key in lowdim_obs_keys(obs) if key.startswith("robot") and not key.endswith("-state")]
     if not keys:
         keys = [key for key in lowdim_obs_keys(obs) if "object" not in key]
     if not keys:
@@ -975,6 +975,12 @@ def make_robosuite_env(data_path: Path, camera: str, width: int, height: int, ho
 
     with h5py.File(data_path, "r") as f:
         env_meta = json.loads(decode_value(f["data"].attrs["env_args"]))
+    return make_env_from_meta(env_meta, camera, width, height, horizon)
+
+
+def make_env_from_meta(env_meta: dict, camera: str, width: int, height: int, horizon: int):
+    """Create a robosuite environment from decoded robomimic metadata."""
+    import robosuite as suite
 
     kwargs = dict(env_meta["env_kwargs"])
     kwargs.update(
@@ -982,6 +988,7 @@ def make_robosuite_env(data_path: Path, camera: str, width: int, height: int, ho
             "has_renderer": False,
             "has_offscreen_renderer": True,
             "use_camera_obs": True,
+            "use_object_obs": False,
             "camera_names": [camera],
             "camera_widths": width,
             "camera_heights": height,
@@ -989,6 +996,14 @@ def make_robosuite_env(data_path: Path, camera: str, width: int, height: int, ho
         }
     )
     return suite.make(env_name=env_meta["env_name"], **kwargs)
+
+
+def set_env_state(env, state: np.ndarray) -> dict[str, np.ndarray]:
+    """Set robosuite to a specific serialized simulator state."""
+    env.sim.set_state_from_flattened(state)
+    env.sim.forward()
+    env.update_state()
+    return env._get_observations(force_update=True)
 
 
 def reset_env_to_demo_start(env, data_path: Path, demo_name: str) -> dict[str, np.ndarray]:
@@ -1000,10 +1015,69 @@ def reset_env_to_demo_start(env, data_path: Path, demo_name: str) -> dict[str, n
 
     env.reset()
     env.reset_from_xml_string(model_xml)
-    env.sim.set_state_from_flattened(initial_state)
-    env.sim.forward()
-    env.update_state()
-    return env._get_observations(force_update=True)
+    return set_env_state(env, initial_state)
+
+
+def render_image_dataset(args: argparse.Namespace) -> None:
+    """Render a raw robomimic state/action file into image-observation HDF5."""
+    src_path = Path(args.data)
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_path.unlink(missing_ok=True)
+
+    with h5py.File(src_path, "r") as src:
+        env_meta = json.loads(decode_value(src["data"].attrs["env_args"]))
+        demos = sorted_demo_keys(src["data"].keys())[: args.max_demos]
+        env = make_env_from_meta(env_meta, args.camera, args.width, args.height, args.max_steps)
+        try:
+            with h5py.File(out_path, "w") as dst:
+                data_out = dst.create_group("data")
+                data_out.attrs["env_args"] = src["data"].attrs["env_args"]
+                total = 0
+                kept_obs_keys: list[str] | None = None
+                for demo_name in tqdm(demos, desc="Rendering image obs"):
+                    demo_in = src["data"][demo_name]
+                    states = demo_in["states"][:]
+                    actions = demo_in["actions"][:]
+                    model_xml = decode_value(demo_in.attrs["model_file"])
+                    length = min(len(actions), len(states))
+                    demo_out = data_out.create_group(demo_name)
+                    demo_out.attrs["model_file"] = demo_in.attrs["model_file"]
+                    demo_out.attrs["num_samples"] = length
+                    demo_out.create_dataset("actions", data=actions[:length].astype(np.float32))
+                    demo_out.create_dataset("states", data=states[:length].astype(np.float32))
+                    obs_out = demo_out.create_group("obs")
+                    frames = []
+                    lowdim_values: dict[str, list[np.ndarray]] = {}
+                    env.reset()
+                    env.reset_from_xml_string(model_xml)
+                    for state in states[:length]:
+                        obs = set_env_state(env, state)
+                        frame_key = f"{args.camera}_image"
+                        if frame_key not in obs:
+                            raise KeyError(f"Camera '{args.camera}' not present in rendered observations")
+                        frames.append(obs[frame_key][::-1].astype(np.uint8))
+                        if kept_obs_keys is None:
+                            kept_obs_keys = sorted(
+                                key
+                                for key, value in obs.items()
+                                if key.startswith("robot")
+                                and np.asarray(value).ndim <= 1
+                                and not key.endswith("_image")
+                                and not key.endswith("-state")
+                            )
+                            if not kept_obs_keys:
+                                raise ValueError("Rendered observations did not include robot proprioception keys")
+                        for key in kept_obs_keys:
+                            lowdim_values.setdefault(key, []).append(np.asarray(obs[key], dtype=np.float32).reshape(-1))
+                    obs_out.create_dataset(args.image_key, data=np.stack(frames), compression="gzip", compression_opts=1)
+                    for key, values in lowdim_values.items():
+                        obs_out.create_dataset(key, data=np.stack(values).astype(np.float32))
+                    total += length
+                data_out.attrs["total"] = total
+        finally:
+            env.close()
+    print(json.dumps({"source": str(src_path), "out": str(out_path), "demos": len(demos), "total": total}, indent=2))
 
 
 def run_policy_episode(
@@ -1283,6 +1357,16 @@ def main() -> None:
     dl.add_argument("--out", type=Path)
     dl.add_argument("--force", action="store_true")
 
+    ri = sub.add_parser("render-images", help="render raw robomimic states into image-observation HDF5")
+    ri.add_argument("--data", required=True, help="raw robomimic demo_v15.hdf5 file")
+    ri.add_argument("--out", required=True, help="output HDF5 with obs/<camera>_image and robot proprioception")
+    ri.add_argument("--max-demos", type=int, default=20)
+    ri.add_argument("--camera", default="agentview")
+    ri.add_argument("--image-key", default="agentview_image")
+    ri.add_argument("--width", type=int, default=128)
+    ri.add_argument("--height", type=int, default=128)
+    ri.add_argument("--max-steps", type=int, default=100)
+
     tr = sub.add_parser("train", help="train ACT on an HDF5 demo file")
     tr.add_argument("--data", required=True)
     tr.add_argument("--out", default="runs/smoke")
@@ -1354,6 +1438,8 @@ def main() -> None:
     args = parser.parse_args()
     if args.cmd == "download":
         download_dataset(args.dataset, args.out, args.force)
+    elif args.cmd == "render-images":
+        render_image_dataset(args)
     elif args.cmd == "train":
         train(args)
     elif args.cmd == "rollout":
