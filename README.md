@@ -15,21 +15,24 @@ policy, roll it out in robosuite, save MP4s, and inspect the training curves.
 
 ## How The Demo Works
 
-Training uses expert demonstrations: at each timestep the dataset contains the
-robot/object state and the action the expert took. ACT learns to predict a
-short chunk of future actions from the current state. Evaluation is different:
-the learned policy controls the simulator step by step, and we count whether
-the task actually succeeds.
+Training uses expert demonstrations: at each timestep the dataset contains an
+observation and the action the expert took. In low-dimensional mode, the
+observation includes privileged simulator state such as object pose. In image
+mode, the policy gets a camera frame plus robot proprioception and has to infer
+object pose from pixels. ACT learns to predict a short chunk of future actions
+from the current observation. Evaluation is different: the learned policy
+controls the simulator step by step, and we count whether the task actually
+succeeds.
 
 ```mermaid
 flowchart TD
     demos["1. Load expert demos<br/>robomimic HDF5 files"]
-    samples["2. Build training samples<br/>current state -> next action chunk"]
-    train["3. Train ACT policy<br/>predict chunk, compare to expert chunk"]
+    samples["2. Build training samples<br/>observation -> next action chunk"]
+    train["3. Train ACT policy<br/>low-dim MLP or image CNN encoder"]
     checkpoints["4. Save checkpoints<br/>best validation loss + final model"]
     rollout["5. Roll out in simulator<br/>policy controls robot step by step"]
     score["6. Score behavior<br/>success count, rewards, MP4/GIF clips"]
-    note["Current simplification<br/>object pose is provided as numbers;<br/>camera vision is not used yet"]
+    note["Comparison knob<br/>low_dim gets object pose;<br/>image mode must infer it"]
 
     demos --> samples --> train --> checkpoints --> rollout --> score
     note -.-> samples
@@ -51,17 +54,19 @@ flowchart TD
 - A compact Action Chunking Transformer-style policy that predicts chunks of
   future robot actions.
 - A CVAE-style latent path for multimodal action chunks.
-- A robomimic low-dimensional demo pipeline using public `lift-ph` and `can-ph`
+- A robomimic low-dimensional baseline using public `lift-ph` and `can-ph`
   datasets.
-- Local observability: `metrics.json`, `history.jsonl`, `loss_curve.svg`,
-  rollout metrics, and MP4 videos.
+- An experimental image-observation path for comparing a scratch CNN encoder
+  against a frozen pretrained ResNet-18 encoder.
+- Local observability: `metrics.json`, `history.jsonl`, `rollout_history.jsonl`,
+  loss and rollout curves, rollout metrics, and MP4 videos.
 
 ## What This Is Not
 
-This repo currently trains from privileged low-dimensional simulator state, not
-camera images. That keeps the demo practical on a laptop and makes the ACT
-training loop easy to understand. A vision-based ACT would need image
-observations plus a visual encoder.
+The strong results below are from privileged low-dimensional simulator state.
+That keeps the ACT training loop practical on a laptop, but the policy is
+"cheating" compared with a camera-only object pose estimate. The image path is
+there to make that gap visible, not to claim state-of-the-art vision imitation.
 
 ## Recent Results
 
@@ -75,8 +80,16 @@ flowchart TD
         direction LR
         liftEarly["3 epochs<br/>14/20"]
         liftMid["20 epochs<br/>10/20"]
-        liftLong["20 minutes<br/>18/20"]
+        liftLong["low-dim 20 min<br/>18/20"]
         liftEarly --> liftMid --> liftLong
+    end
+
+    subgraph visionLift["Lift from pixels"]
+        direction LR
+        visionSmoke["scratch CNN 20 epochs<br/>10/20"]
+        visionFirst["scratch CNN +20 min<br/>14/20"]
+        visionLong["scratch CNN +40 min<br/>17/20"]
+        visionSmoke --> visionFirst --> visionLong
     end
 
     subgraph canTask["Can task"]
@@ -92,15 +105,17 @@ flowchart TD
     classDef strong fill:#ecfff2,stroke:#2f855a,color:#1f2c24
 
     class liftEarly,canSmoke weak
-    class liftMid,canBest mid
-    class liftLong,canLast strong
+    class liftMid,canBest,visionSmoke mid
+    class liftLong,canLast,visionFirst,visionLong strong
 ```
 
 | Task | Run | Checkpoint | Horizon | Success | Readout |
 | --- | --- | --- | ---: | ---: | --- |
 | `lift-ph` | 3 epochs | `best.pt` | 100 | 14/20 | Minimal training already learns some behavior from low-dim state. |
 | `lift-ph` | 20 epochs | `best.pt` | 100 | 10/20 | Better validation loss, worse closed-loop behavior. |
-| `lift-ph` | 20 minutes | `best.pt` | 100 | 18/20 | Strongest lift run so far. |
+| `lift-ph` | low-dim 20 minutes | `best.pt` | 100 | 18/20 | Strongest privileged-state Lift run so far. |
+| `lift-ph-image` | scratch CNN, 20 epochs | `best.pt` | 100 | 10/20 | First high-dimensional baseline from pixels plus proprioception. |
+| `lift-ph-image` | scratch CNN, +40 minutes | `last.pt` | 100 | 17/20 | Best vision run so far, close to the low-dim baseline. |
 | `can-ph` | 1 epoch smoke | `best.pt` | 200 | 1/20 | Barely trained baseline. |
 | `can-ph` | 6 hr validation-best | `best.pt` | 200 | 7/20 | Lowest validation loss checkpoint was not the best actor. |
 | `can-ph` | 6 hr final | `last.pt` | 200 | 18/20 | Strongest can run so far. |
@@ -119,6 +134,8 @@ Two useful lessons showed up quickly:
   policy actually complete the task when its own actions affect the next state?
 - For `can-ph`, the validation-best checkpoint was not rollout-best. The final
   checkpoint had worse validation loss but much better policy behavior.
+- The same pattern showed up in vision Lift: the scratch-CNN final checkpoint
+  reached 17/20 successes, while its validation-best checkpoint reached 13/20.
 
 ## Rollout Clips
 
@@ -158,6 +175,113 @@ uv run python act.py train \
 
 Use `--device cpu` if you are not on Apple Silicon. Use `--device cuda` if your
 PyTorch install has CUDA support.
+
+## Vision Mode
+
+The first vision experiment should be `lift-ph-image` with the scratch CNN. It
+uses `agentview_image` plus robot proprioception and deliberately excludes the
+privileged robomimic `object` state vector.
+
+```bash
+uv run python act.py download --dataset lift-ph-image
+```
+
+The downloaded file is a raw robomimic state/action file. Render a compact
+image-observation training file before training:
+
+```bash
+uv run python act.py render-images \
+  --data data/lift_ph_image.hdf5 \
+  --out data/lift_ph_agentview_20demos.hdf5 \
+  --max-demos 20 \
+  --width 128 \
+  --height 128
+```
+
+Train the scratch-CNN version:
+
+```bash
+uv run python act.py train \
+  --data data/lift_ph_agentview_20demos.hdf5 \
+  --out runs/lift_vision_scratch \
+  --obs-mode image \
+  --vision-backbone scratch_cnn \
+  --epochs 20 \
+  --batch-size 64 \
+  --device mps
+```
+
+Evaluate it the same way as the low-dimensional checkpoint:
+
+```bash
+uv run python act.py evaluate \
+  --checkpoint runs/lift_vision_scratch/best.pt \
+  --data data/lift_ph_agentview_20demos.hdf5 \
+  --out-dir runs/lift_vision_scratch_eval \
+  --episodes 20 \
+  --videos 3 \
+  --device mps
+```
+
+For the pretrained comparison, install the optional vision extra and freeze a
+pretrained ResNet-18 image encoder:
+
+```bash
+uv sync --group dev --extra vision
+
+uv run --extra vision python act.py train \
+  --data data/lift_ph_agentview_20demos.hdf5 \
+  --out runs/lift_vision_resnet18_frozen \
+  --obs-mode image \
+  --vision-backbone resnet18 \
+  --vision-pretrained \
+  --freeze-vision \
+  --epochs 20 \
+  --batch-size 64 \
+  --device mps
+```
+
+The useful comparison is not just loss. Run the same rollout evaluation for
+both checkpoints and compare success rate, failure modes, and MP4/GIF clips.
+For longer runs, add closed-loop probes during training so the run records task
+success as well as supervised train/validation loss:
+
+```bash
+uv run python act.py train \
+  --data data/lift_ph_agentview_20demos.hdf5 \
+  --out runs/lift_vision_scratch_continue \
+  --resume runs/lift_vision_scratch/last.pt \
+  --obs-mode image \
+  --vision-backbone scratch_cnn \
+  --epochs 10000 \
+  --max-minutes 20 \
+  --batch-size 64 \
+  --device mps \
+  --eval-before-train \
+  --eval-every-epochs 50 \
+  --eval-episodes 10 \
+  --eval-max-steps 100
+```
+
+This writes `rollout_history.jsonl`. `plot-history` will also generate
+`rollout_curve.svg` when rollout probes are present.
+
+Current local Lift comparison:
+
+| Policy | Observation | Checkpoint | Rollout result |
+| --- | --- | --- | --- |
+| Low-dim ACT, 20 min | Robot state plus privileged object state | `best.pt` | 18/20 successes |
+| Scratch-CNN ACT, 20 epochs | `agentview_image` plus robot proprioception | `best.pt` | 10/20 successes |
+| Scratch-CNN ACT, 20 min | `agentview_image` plus robot proprioception | `best.pt` | 5/20 successes |
+| Scratch-CNN ACT, 20 min | `agentview_image` plus robot proprioception | `last.pt` | 9/20 successes |
+| Scratch-CNN ACT, +20 min with rollout probes | `agentview_image` plus robot proprioception | `best.pt` | 12/20 successes |
+| Scratch-CNN ACT, +20 min with rollout probes | `agentview_image` plus robot proprioception | `last.pt` | 14/20 successes |
+| Scratch-CNN ACT, +40 min with rollout probes | `agentview_image` plus robot proprioception | `best.pt` | 13/20 successes |
+| Scratch-CNN ACT, +40 min with rollout probes | `agentview_image` plus robot proprioception | `last.pt` | 17/20 successes |
+
+The scratch-CNN result is intentionally not presented as solved. It is the
+first high-dimensional baseline: less privileged than low-dim, clearly learning
+something, and currently more brittle.
 
 ## Roll Out A Policy
 
@@ -209,6 +333,8 @@ Training writes:
 - `last.pt`: final checkpoint
 - `metrics.json`: compact run summary
 - `history.jsonl`: one JSON row per epoch
+- `rollout_history.jsonl`: optional closed-loop probes when `--eval-every-epochs`
+  is set
 
 Generate a loss curve:
 
@@ -222,6 +348,8 @@ Outputs:
 
 - `runs/lift_20min/loss_curve.svg`
 - `runs/lift_20min/history_summary.json`
+- `runs/lift_20min/rollout_curve.svg`, if the run has rollout probes
+- `runs/lift_20min/rollout_summary.json`, if the run has rollout probes
 
 ## Try The Can Task
 
@@ -275,6 +403,8 @@ uv run python act.py latent-sweep \
   shapes.
 - [tests/test_act.py](tests/test_act.py): lightweight smoke tests.
 - [docs/work-log.md](docs/work-log.md): concise dated experiment notes.
+- [docs/vision-results.md](docs/vision-results.md): compact vision-run metrics
+  and artifact paths.
 
 Generated datasets, checkpoints, logs, and videos live under `data/` and
 `runs/`; both are ignored by git.
