@@ -13,6 +13,10 @@ This is meant to be a friendly demo project: compact enough to read in one
 sitting, but real enough to download public robot data, train a transformer
 policy, roll it out in robosuite, save MP4s, and inspect the training curves.
 
+<p align="center">
+  <img src="docs/assets/act-pipeline.svg" alt="ACT demo pipeline" width="820">
+</p>
+
 ## What This Is
 
 - A one-file training and evaluation script: [act.py](act.py).
@@ -35,6 +39,10 @@ observations plus a visual encoder.
 
 These numbers are from deterministic `z=0` rollouts started from demonstration
 initial simulator states.
+
+<p align="center">
+  <img src="docs/assets/rollout-results.svg" alt="Recent rollout results" width="820">
+</p>
 
 | Task | Data | Training | Checkpoint | Horizon | Success |
 | --- | ---: | ---: | --- | ---: | ---: |

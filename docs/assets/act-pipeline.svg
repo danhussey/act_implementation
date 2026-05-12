@@ -1,0 +1,107 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="420" viewBox="0 0 960 420" role="img" aria-labelledby="title desc">
+  <title id="title">ACT demo training pipeline</title>
+  <desc id="desc">A diagram showing robomimic data flowing through a PyTorch data loader, ACT policy, robosuite rollout, and metrics plus videos.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#fff8eb"/>
+      <stop offset="55%" stop-color="#f2fbf6"/>
+      <stop offset="100%" stop-color="#edf5ff"/>
+    </linearGradient>
+    <linearGradient id="card" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#ffffff"/>
+      <stop offset="100%" stop-color="#f8faf7"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-20%" width="120%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="12" flood-color="#23301f" flood-opacity="0.14"/>
+    </filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="10" refY="6" orient="auto">
+      <path d="M2,2 L10,6 L2,10 Z" fill="#34453a"/>
+    </marker>
+    <style>
+      .title { font: 700 30px Georgia, serif; fill: #1f2c24; }
+      .subtitle { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #526356; }
+      .label { font: 700 17px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #1f2c24; }
+      .small { font: 500 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #59695d; }
+      .tiny { font: 650 11px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: .04em; fill: #6d7a70; }
+      .box { fill: url(#card); stroke: #d7dfd4; stroke-width: 1.5; filter: url(#shadow); }
+      .inner { fill: #f4f7f1; stroke: #d9e1d4; stroke-width: 1; }
+      .arrow { stroke: #34453a; stroke-width: 2.5; fill: none; marker-end: url(#arrow); }
+      .chip { fill: #20362a; }
+      .chipText { font: 700 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #fffaf0; }
+    </style>
+  </defs>
+
+  <rect width="960" height="420" rx="28" fill="url(#bg)"/>
+  <circle cx="78" cy="78" r="74" fill="#ffe4b5" opacity="0.45"/>
+  <circle cx="880" cy="72" r="86" fill="#c9e7ff" opacity="0.42"/>
+  <circle cx="837" cy="360" r="118" fill="#cbe8d2" opacity="0.35"/>
+
+  <text x="48" y="58" class="title">A small ACT run, end to end</text>
+  <text x="50" y="86" class="subtitle">Public robot demos in, chunked policy out, rollouts recorded as the real test.</text>
+
+  <g transform="translate(48 132)">
+    <rect class="box" width="142" height="112" rx="18"/>
+    <rect x="18" y="18" width="38" height="38" rx="10" fill="#f9d98e"/>
+    <path d="M27 32 h20 M27 42 h32 M27 52 h24" stroke="#785d1a" stroke-width="3" stroke-linecap="round"/>
+    <text x="18" y="78" class="label">robomimic</text>
+    <text x="18" y="98" class="small">HDF5 demos</text>
+  </g>
+
+  <path class="arrow" d="M205 188 H264"/>
+
+  <g transform="translate(278 132)">
+    <rect class="box" width="142" height="112" rx="18"/>
+    <rect x="18" y="18" width="46" height="38" rx="10" fill="#d7edd9"/>
+    <circle cx="33" cy="37" r="7" fill="#325f41"/>
+    <circle cx="49" cy="30" r="5" fill="#5e8b69"/>
+    <text x="18" y="78" class="label">low-dim</text>
+    <text x="18" y="98" class="small">state + actions</text>
+  </g>
+
+  <path class="arrow" d="M435 188 H494"/>
+
+  <g transform="translate(508 132)">
+    <rect class="box" width="142" height="112" rx="18"/>
+    <rect x="18" y="18" width="44" height="38" rx="10" fill="#dfe8ff"/>
+    <path d="M29 28 h22 M29 39 h22 M29 50 h22" stroke="#345088" stroke-width="3" stroke-linecap="round"/>
+    <text x="18" y="78" class="label">DataLoader</text>
+    <text x="18" y="98" class="small">batched chunks</text>
+  </g>
+
+  <path class="arrow" d="M665 188 H724"/>
+
+  <g transform="translate(738 112)">
+    <rect class="box" width="174" height="152" rx="20"/>
+    <text x="20" y="36" class="label">ACT policy</text>
+    <text x="20" y="58" class="small">predicts an action chunk</text>
+    <rect x="20" y="76" width="58" height="26" rx="13" class="inner"/>
+    <text x="32" y="94" class="small">CVAE z</text>
+    <rect x="88" y="76" width="66" height="26" rx="13" class="inner"/>
+    <text x="100" y="94" class="small">decoder</text>
+    <rect x="20" y="112" width="134" height="24" rx="12" class="chip"/>
+    <text x="43" y="129" class="chipText">10 action steps</text>
+  </g>
+
+  <path class="arrow" d="M825 275 C825 315 685 320 650 292"/>
+  <path class="arrow" d="M508 292 H300 C232 292 188 260 157 232"/>
+
+  <g transform="translate(298 284)">
+    <rect class="box" width="202" height="86" rx="18"/>
+    <text x="20" y="34" class="label">robosuite rollout</text>
+    <text x="20" y="57" class="small">policy attempts the task</text>
+  </g>
+
+  <g transform="translate(538 284)">
+    <rect class="box" width="202" height="86" rx="18"/>
+    <text x="20" y="34" class="label">metrics + MP4s</text>
+    <text x="20" y="57" class="small">success rate, curves, videos</text>
+  </g>
+
+  <path class="arrow" d="M500 327 H524"/>
+
+  <g transform="translate(52 300)">
+    <rect x="0" y="0" width="176" height="48" rx="24" fill="#fff5da" stroke="#ead9a7"/>
+    <text x="20" y="20" class="tiny">key simplification</text>
+    <text x="20" y="37" class="small">state is given, vision is not</text>
+  </g>
+</svg>

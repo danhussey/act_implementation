@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="360" viewBox="0 0 960 360" role="img" aria-labelledby="title desc">
+  <title id="title">Recent ACT rollout results</title>
+  <desc id="desc">A compact results card showing 18 out of 20 successes for Lift and Can rollouts, plus a note that rollout success is the real selector.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#15251d"/>
+      <stop offset="58%" stop-color="#233c30"/>
+      <stop offset="100%" stop-color="#2f4d40"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#ffe9a8"/>
+      <stop offset="100%" stop-color="#efc65b"/>
+    </linearGradient>
+    <linearGradient id="mint" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#d9f7e1"/>
+      <stop offset="100%" stop-color="#84d69d"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-20%" width="120%" height="150%">
+      <feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#000000" flood-opacity="0.2"/>
+    </filter>
+    <style>
+      .eyebrow { font: 750 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: .13em; fill: #c9d9cf; }
+      .title { font: 700 30px Georgia, serif; fill: #fff8e8; }
+      .sub { font: 500 15px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #d7e3db; }
+      .card { fill: #ffffff; fill-opacity: .09; stroke: #ffffff; stroke-opacity: .18; stroke-width: 1.5; filter: url(#shadow); }
+      .task { font: 750 19px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #fff8e8; }
+      .metric { font: 800 58px Georgia, serif; fill: #fff8e8; }
+      .percent { font: 800 23px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #20362a; }
+      .small { font: 520 13px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #dbe8df; }
+      .label { font: 700 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: .05em; fill: #aebfb4; }
+      .note { font: 650 16px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; fill: #fff8e8; }
+    </style>
+  </defs>
+
+  <rect width="960" height="360" rx="28" fill="url(#bg)"/>
+  <circle cx="74" cy="70" r="92" fill="#f3c75d" opacity="0.13"/>
+  <circle cx="860" cy="308" r="132" fill="#94d8a4" opacity="0.13"/>
+  <path d="M0 300 C135 258 245 328 380 284 C543 231 675 266 960 205 V360 H0 Z" fill="#fff8e8" opacity="0.06"/>
+
+  <text x="48" y="52" class="eyebrow">LATEST LOCAL CHECKPOINTS</text>
+  <text x="48" y="88" class="title">Rollout success is the metric that matters</text>
+  <text x="50" y="116" class="sub">Validation loss helped debug training, but real environment attempts exposed the useful policy.</text>
+
+  <g transform="translate(54 154)">
+    <rect class="card" width="398" height="142" rx="22"/>
+    <text x="24" y="36" class="task">Lift</text>
+    <text x="24" y="96" class="metric">18/20</text>
+    <rect x="288" y="25" width="72" height="72" rx="36" fill="url(#gold)"/>
+    <text x="305" y="69" class="percent">90%</text>
+    <text x="24" y="124" class="small">100-step z=0 rollouts from best.pt</text>
+  </g>
+
+  <g transform="translate(508 154)">
+    <rect class="card" width="398" height="142" rx="22"/>
+    <text x="24" y="36" class="task">Can</text>
+    <text x="24" y="96" class="metric">18/20</text>
+    <rect x="288" y="25" width="72" height="72" rx="36" fill="url(#mint)"/>
+    <text x="305" y="69" class="percent">90%</text>
+    <text x="24" y="124" class="small">200-step z=0 rollouts from last.pt</text>
+  </g>
+
+  <g transform="translate(54 316)">
+    <text x="0" y="0" class="label">NEXT QUESTION</text>
+    <text x="116" y="0" class="note">Why can lower loss still produce worse behavior? Explore latent modes and overfitting with rollouts.</text>
+  </g>
+</svg>
