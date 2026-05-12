@@ -2,7 +2,8 @@
 
 Concise notes for the high-dimensional Lift path. These runs use
 `agentview_image` plus robot proprioception and exclude the privileged
-robomimic `object` state.
+robomimic `object` state. `agentview` is a third-person camera, not a wrist/POV
+camera, so it can still suffer from hand/object occlusion.
 
 ## Lift Scratch CNN
 
@@ -37,6 +38,9 @@ late probe still caught a real degradation risk.
   baseline still has a small edge at 18/20 and uses privileged object state.
 - Frozen pretrained ResNet-18 reached strong behavior quickly but did not beat
   the longer scratch-CNN run on the full 20-start eval.
+- Observation media now avoids duplicating the vision panel when the rollout
+  view and policy camera are both `agentview`. The low-dim media remains
+  side-by-side because the policy input is spatial simulator state, not pixels.
 
 ## Useful Artifacts
 
@@ -46,7 +50,7 @@ late probe still caught a real degradation risk.
   `runs/lift_vision_resnet18_frozen_20min_20260512/eval_20_z0_best/eval_metrics.json`
 - Latest rollout MP4s:
   `runs/lift_vision_scratch_continue2_rollout_20260512/eval_20_z0_last/videos/`
-- Observation-comparison GIFs:
+- Observation GIFs:
   `docs/assets/lift_lowdim_policy_view_demo10.gif`,
   `docs/assets/lift_scratchcnn_policy_view_demo10.gif`,
   `docs/assets/lift_resnet18_policy_view_demo10.gif`

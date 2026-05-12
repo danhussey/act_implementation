@@ -63,10 +63,14 @@ flowchart TD
 
 ## What This Is Not
 
-The strong results below are from privileged low-dimensional simulator state.
+The strongest low-dimensional results below use privileged simulator state.
 That keeps the ACT training loop practical on a laptop, but the policy is
 "cheating" compared with a camera-only object pose estimate. The image path is
 there to make that gap visible, not to claim state-of-the-art vision imitation.
+The current vision runs use robosuite's third-person `agentview` camera, not a
+wrist/POV camera. That view can still be occluded by the robot hand; a more
+robust version would use multiple cameras, a wrist camera, augmentation, or a
+learned state estimator.
 
 ## Recent Results
 
@@ -153,10 +157,11 @@ checkpoint, not a different initial scene.
 
 ## What The Policy Sees
 
-These clips show the simulator camera beside the policy input representation.
-For vision policies, the right panel is the image tensor fed to the CNN/ResNet
-encoder. For the low-dimensional baseline, the right panel is normalized
-privileged simulator state; that is why the low-dim model is easier.
+These clips show what the policy is actually conditioned on. The vision runs use
+`agentview_image`, so the rollout view and policy image are the same panel: if
+they are identical, the media does not duplicate them. The low-dimensional
+baseline is different, so it stays side-by-side: left is the rollout camera,
+right is a spatial sketch of the privileged simulator state.
 
 | Low-dim baseline | Scratch CNN | Frozen pretrained ResNet-18 |
 | :---: | :---: | :---: |
@@ -193,8 +198,8 @@ PyTorch install has CUDA support.
 ## Vision Mode
 
 The first vision experiment should be `lift-ph-image` with the scratch CNN. It
-uses `agentview_image` plus robot proprioception and deliberately excludes the
-privileged robomimic `object` state vector.
+uses third-person `agentview_image` plus robot proprioception and deliberately
+excludes the privileged robomimic `object` state vector.
 
 ```bash
 uv run python act.py download --dataset lift-ph-image
@@ -308,6 +313,23 @@ uv run python act.py observe-rollout \
   --data data/lift_ph_agentview_20demos.hdf5 \
   --out-dir runs/lift_vision_scratch_observe \
   --demo-index 10 \
+  --device mps
+```
+
+For image checkpoints, `--camera` means "the camera image fed to the policy".
+`--view-camera` optionally chooses a different rollout display camera. When
+both are `agentview`, the output is a single panel because the viewer and policy
+input are the same image. To compare a wrist-style view against the actual
+trained policy input:
+
+```bash
+uv run python act.py observe-rollout \
+  --checkpoint runs/lift_vision_scratch/best.pt \
+  --data data/lift_ph_agentview_20demos.hdf5 \
+  --out-dir runs/lift_vision_scratch_observe_wrist \
+  --demo-index 10 \
+  --camera agentview \
+  --view-camera robot0_eye_in_hand \
   --device mps
 ```
 

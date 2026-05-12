@@ -368,6 +368,16 @@ def color_for_obs_key(key: str) -> tuple[int, int, int]:
     return (93, 92, 222)
 
 
+def env_camera_key(camera: str) -> str:
+    """Return the live robosuite image observation key for one camera."""
+    return camera if camera.endswith("_image") else f"{camera}_image"
+
+
+def camera_from_image_key(image_key: str) -> str:
+    """Infer a camera name from a robomimic image observation key."""
+    return image_key.removesuffix("_image")
+
+
 def state_parts_from_env_obs(obs: dict[str, np.ndarray], keys: list[str]) -> tuple[np.ndarray, list[tuple[str, int, int]]]:
     """Return raw state values plus source-key spans for visualization."""
     values = []
@@ -386,6 +396,22 @@ def state_parts_from_env_obs(obs: dict[str, np.ndarray], keys: list[str]) -> tup
     return np.concatenate(values).astype(np.float32), spans
 
 
+def vector_from_env_obs(obs: dict[str, np.ndarray], key: str) -> np.ndarray | None:
+    """Return one flattened live observation vector, handling robomimic aliases."""
+    source_key = key
+    if source_key not in obs and source_key == "object" and "object-state" in obs:
+        source_key = "object-state"
+    if source_key not in obs:
+        return None
+    return np.asarray(obs[source_key], dtype=np.float32).reshape(-1)
+
+
+def draw_marker_label(draw, x: int, y: int, text: str, color: tuple[int, int, int], font) -> None:
+    """Draw a compact marker label on a light background."""
+    draw.ellipse((x, y + 3, x + 8, y + 11), fill=color)
+    draw.text((x + 12, y), text, fill=(31, 41, 55), font=font)
+
+
 def lowdim_state_panel(
     obs: dict[str, np.ndarray],
     obs_keys: list[str],
@@ -393,7 +419,7 @@ def lowdim_state_panel(
     width: int,
     height: int,
 ) -> np.ndarray:
-    """Render the privileged low-dimensional state as a normalized bar panel."""
+    """Render privileged low-dimensional state as a spatial sketch plus strip."""
     Image, ImageDraw, _ = require_pillow()
     raw, spans = state_parts_from_env_obs(obs, obs_keys)
     mean = stats["state_mean"].detach().cpu().numpy()
@@ -403,43 +429,91 @@ def lowdim_state_panel(
     image = Image.new("RGB", (width, height), (248, 246, 239))
     draw = ImageDraw.Draw(image)
     font = font_default()
-    draw.text((8, 8), "normalized policy state", fill=(31, 41, 55), font=font)
-    draw.text((8, height - 18), "bars clipped to +/-3 std", fill=(85, 94, 106), font=font)
 
-    left, right, top, bottom = 12, 12, 32, 28
+    eef = vector_from_env_obs(obs, "robot0_eef_pos")
+    obj = vector_from_env_obs(obs, "object")
+    gripper = vector_from_env_obs(obs, "robot0_gripper_qpos")
+    if eef is None or eef.size < 3:
+        draw.text((10, 10), "spatial state unavailable", fill=(31, 41, 55), font=font)
+    else:
+        map_left, map_top = 12, 12
+        map_right, map_bottom = width - 58, max(82, height - 54)
+        map_w = max(64, map_right - map_left)
+        map_h = max(64, map_bottom - map_top)
+        map_right = map_left + map_w
+        map_bottom = map_top + map_h
+        draw.rounded_rectangle((map_left, map_top, map_right, map_bottom), radius=10, fill=(238, 242, 235), outline=(203, 213, 204), width=1)
+        draw.text((map_left + 8, map_top + 7), "top-down x/y", fill=(85, 94, 106), font=font)
+
+        points = [eef[:3]]
+        if obj is not None and obj.size >= 3:
+            points.append(obj[:3])
+        center = np.mean(np.stack(points), axis=0)
+        span = 0.62
+        x_min, x_max = center[0] - span / 2, center[0] + span / 2
+        y_min, y_max = center[1] - span / 2, center[1] + span / 2
+
+        def xy(pos: np.ndarray) -> tuple[int, int]:
+            px = map_left + 14 + (float(pos[0]) - x_min) / (x_max - x_min) * (map_w - 28)
+            py = map_bottom - 14 - (float(pos[1]) - y_min) / (y_max - y_min) * (map_h - 28)
+            return int(np.clip(px, map_left + 10, map_right - 10)), int(np.clip(py, map_top + 22, map_bottom - 10))
+
+        eef_x, eef_y = xy(eef)
+        if obj is not None and obj.size >= 3:
+            obj_x, obj_y = xy(obj)
+            draw.line((eef_x, eef_y, obj_x, obj_y), fill=(120, 133, 128), width=2)
+            draw.rounded_rectangle((obj_x - 8, obj_y - 8, obj_x + 8, obj_y + 8), radius=3, fill=color_for_obs_key("object"), outline=(126, 74, 20), width=1)
+        draw.ellipse((eef_x - 8, eef_y - 8, eef_x + 8, eef_y + 8), fill=(219, 234, 254), outline=color_for_obs_key("robot0_eef_pos"), width=3)
+
+        jaw = 10
+        openness = float(np.mean(np.abs(gripper))) if gripper is not None and gripper.size else 0.02
+        jaw_gap = int(np.clip(openness * 260, 4, 14))
+        draw.line((eef_x - jaw_gap, eef_y - jaw, eef_x - jaw_gap, eef_y + jaw), fill=(30, 64, 175), width=2)
+        draw.line((eef_x + jaw_gap, eef_y - jaw, eef_x + jaw_gap, eef_y + jaw), fill=(30, 64, 175), width=2)
+
+        z_left = width - 42
+        z_top, z_bottom = map_top + 24, map_bottom - 8
+        draw.line((z_left, z_top, z_left, z_bottom), fill=(156, 163, 175), width=1)
+        draw.text((z_left - 4, map_top + 7), "z", fill=(85, 94, 106), font=font)
+        z_min, z_max = 0.72, 1.12
+
+        def z_y(value: float) -> int:
+            return int(np.clip(z_bottom - (value - z_min) / (z_max - z_min) * (z_bottom - z_top), z_top, z_bottom))
+
+        eef_zy = z_y(float(eef[2]))
+        draw.ellipse((z_left - 5, eef_zy - 5, z_left + 5, eef_zy + 5), fill=color_for_obs_key("robot0_eef_pos"))
+        if obj is not None and obj.size >= 3:
+            obj_zy = z_y(float(obj[2]))
+            draw.rectangle((z_left + 10, obj_zy - 5, z_left + 20, obj_zy + 5), fill=color_for_obs_key("object"))
+            distance = float(np.linalg.norm(eef[:3] - obj[:3]))
+            info = f"dist {distance:.2f}m  eef z {eef[2]:.2f}  obj z {obj[2]:.2f}"
+        else:
+            info = f"eef z {eef[2]:.2f}"
+        draw.text((12, height - 43), info, fill=(31, 41, 55), font=font)
+        draw_marker_label(draw, 12, height - 28, "eef/gripper", color_for_obs_key("robot0_eef_pos"), font)
+        if obj is not None and obj.size >= 3:
+            draw_marker_label(draw, 94, height - 28, "object", color_for_obs_key("object"), font)
+
+    strip_top = height - 13
+    strip_h = 6
+    left, right = 12, 12
     plot_w = width - left - right
-    plot_h = height - top - bottom
-    mid_y = top + plot_h // 2
-    draw.line((left, mid_y, width - right, mid_y), fill=(107, 114, 128), width=1)
-    draw.line((left, top, width - right, top), fill=(229, 231, 235), width=1)
-    draw.line((left, top + plot_h, width - right, top + plot_h), fill=(229, 231, 235), width=1)
-
     count = max(1, len(normalized))
     slot = plot_w / count
-    bar_w = max(1, int(slot * 0.72))
+    bar_w = max(1, int(slot * 0.86))
     key_for_index = []
     for key, start, end in spans:
         key_for_index.extend([key] * (end - start))
     for index, value in enumerate(normalized):
         x0 = int(left + index * slot + (slot - bar_w) / 2)
         x1 = max(x0 + 1, x0 + bar_w)
-        y = int(mid_y - value / 3.0 * (plot_h / 2))
-        color = color_for_obs_key(key_for_index[index])
-        if value >= 0:
-            draw.rectangle((x0, min(y, mid_y), x1, max(y, mid_y)), fill=color)
-        else:
-            draw.rectangle((x0, min(y, mid_y), x1, max(y, mid_y)), fill=color)
-
-    legend_x = width - 128
-    legend = [
-        ("robot/eef", color_for_obs_key("robot0_eef_pos")),
-        ("gripper", color_for_obs_key("robot0_gripper_qpos")),
-        ("object", color_for_obs_key("object")),
-    ]
-    for row, (label, color) in enumerate(legend):
-        y = 8 + row * 12
-        draw.rectangle((legend_x, y + 2, legend_x + 8, y + 10), fill=color)
-        draw.text((legend_x + 12, y), label, fill=(31, 41, 55), font=font)
+        intensity = 0.35 + min(1.0, abs(float(value)) / 3.0) * 0.65
+        base_color = np.array(color_for_obs_key(key_for_index[index]), dtype=np.float32)
+        color = tuple(np.clip(base_color * intensity + 255 * (1 - intensity), 0, 255).astype(np.uint8).tolist())
+        y0 = strip_top if value >= 0 else strip_top + strip_h
+        y1 = strip_top + strip_h if value >= 0 else strip_top + strip_h * 2
+        draw.rectangle((x0, y0, x1, y1), fill=color)
+    draw.line((left, strip_top + strip_h, width - right, strip_top + strip_h), fill=(107, 114, 128), width=1)
     return np.asarray(image).copy()
 
 
@@ -481,28 +555,34 @@ def policy_input_panel(
     if mode == "image":
         if assets.image_shape is None:
             raise ValueError("Image panel requested for a checkpoint without image observations")
-        image = image_from_env_obs(obs, assets.image_key, camera, assets.image_shape)
-        return titled_panel(image.detach().cpu().numpy(), "policy input: image (+proprio)", width, height)
+        image_key = env_camera_key(camera)
+        image = image_from_env_obs(obs, image_key, camera, assets.image_shape)
+        return titled_panel(image.detach().cpu().numpy(), f"policy: {camera} + proprio", width, height)
     if mode == "low_dim":
         panel = lowdim_state_panel(obs, assets.obs_keys, assets.stats, width, height)
-        return titled_panel(panel, "policy input: normalized low-dim state", width, height)
+        return titled_panel(panel, "policy: spatial low-dim state", width, height)
     raise ValueError(f"Unknown panel mode '{panel_mode}'")
 
 
 def comparison_observation_frame(
     obs: dict[str, np.ndarray],
     assets: "RolloutAssets",
-    camera: str,
+    view_camera: str,
+    policy_camera: str,
     panel_mode: str,
     width: int,
     height: int,
 ) -> np.ndarray:
-    """Build one side-by-side observation comparison frame."""
-    frame_key = f"{camera}_image"
+    """Build one observation frame, avoiding duplicate panels when cameras match."""
+    mode = assets.obs_mode if panel_mode == "auto" else panel_mode
+    frame_key = env_camera_key(view_camera)
     if frame_key not in obs:
-        raise KeyError(f"Camera '{camera}' not present in environment observation")
-    camera_panel = titled_panel(obs[frame_key][::-1], "simulator rollout camera", width, height)
-    input_panel = policy_input_panel(obs, assets, camera, panel_mode, width, height)
+        raise KeyError(f"Camera '{view_camera}' not present in environment observation")
+    camera_title = f"view: {view_camera}"
+    if assets.obs_mode == "image" and mode == "image" and view_camera == policy_camera:
+        return np.ascontiguousarray(titled_panel(obs[frame_key][::-1], f"{view_camera}: rollout=input", width, height))
+    camera_panel = titled_panel(obs[frame_key][::-1], camera_title, width, height)
+    input_panel = policy_input_panel(obs, assets, policy_camera, panel_mode, width, height)
     return np.ascontiguousarray(np.concatenate([camera_panel, input_panel], axis=1))
 
 
@@ -1370,20 +1450,30 @@ def load_rollout_assets(checkpoint_path: Path, data_path: Path, device: torch.de
     return RolloutAssets(model=model, stats=stats, obs_keys=obs_keys, obs_mode=obs_mode, image_key=image_key, image_shape=image_shape)
 
 
-def make_robosuite_env(data_path: Path, camera: str, width: int, height: int, horizon: int):
-    """Create a robosuite environment from robomimic dataset metadata."""
-    import robosuite as suite
+def normalized_camera_names(camera: str | list[str]) -> list[str]:
+    """Return deduplicated robosuite camera names in request order."""
+    cameras = [camera] if isinstance(camera, str) else list(camera)
+    normalized = []
+    for name in cameras:
+        camera_name = camera_from_image_key(name)
+        if camera_name not in normalized:
+            normalized.append(camera_name)
+    return normalized
 
+
+def make_robosuite_env(data_path: Path, camera: str | list[str], width: int, height: int, horizon: int):
+    """Create a robosuite environment from robomimic dataset metadata."""
     with h5py.File(data_path, "r") as f:
         env_meta = json.loads(decode_value(f["data"].attrs["env_args"]))
     return make_env_from_meta(env_meta, camera, width, height, horizon)
 
 
-def make_env_from_meta(env_meta: dict, camera: str, width: int, height: int, horizon: int):
+def make_env_from_meta(env_meta: dict, camera: str | list[str], width: int, height: int, horizon: int):
     """Create a robosuite environment from decoded robomimic metadata."""
     import robosuite as suite
 
     kwargs = dict(env_meta["env_kwargs"])
+    camera_names = normalized_camera_names(camera)
     kwargs.update(
         {
             "has_renderer": False,
@@ -1392,9 +1482,9 @@ def make_env_from_meta(env_meta: dict, camera: str, width: int, height: int, hor
             # Vision checkpoints exclude object state through obs_keys, but
             # low-dim checkpoints still need object-state in live rollouts.
             "use_object_obs": True,
-            "camera_names": [camera],
-            "camera_widths": width,
-            "camera_heights": height,
+            "camera_names": camera_names,
+            "camera_widths": [width] * len(camera_names),
+            "camera_heights": [height] * len(camera_names),
             "horizon": horizon,
         }
     )
@@ -1688,13 +1778,22 @@ def observe_rollout(args: argparse.Namespace) -> None:
         demos = sorted_demo_keys(f["data"].keys())
     demo_name = demos[args.demo_index]
 
+    policy_camera = args.camera or (camera_from_image_key(assets.image_key) if assets.obs_mode == "image" else "agentview")
+    view_camera = args.view_camera or policy_camera
+    env_cameras = [view_camera]
+    if assets.obs_mode == "image" and policy_camera not in env_cameras:
+        env_cameras.append(policy_camera)
+
     panel_mode = assets.obs_mode if args.panel_mode == "auto" else args.panel_mode
     stem = f"demo_{args.demo_index:03d}_{panel_mode}"
+    if view_camera != policy_camera:
+        stem += f"_view_{view_camera}"
     mp4_path = Path(args.out_mp4) if args.out_mp4 else out_dir / f"{stem}.mp4"
     gif_path = None if args.no_gif else (Path(args.out_gif) if args.out_gif else out_dir / f"{stem}.gif")
 
-    env = make_robosuite_env(data_path, args.camera, args.width, args.height, args.max_steps)
-    writer = FFmpegVideoWriter(mp4_path, args.width * 2, args.height + PANEL_TITLE_HEIGHT, args.fps)
+    env = make_robosuite_env(data_path, env_cameras, args.width, args.height, args.max_steps)
+    writer = None
+    media_layout = "comparison"
     total_reward = 0.0
     success = False
     steps = 0
@@ -1702,8 +1801,11 @@ def observe_rollout(args: argparse.Namespace) -> None:
     action_norms = []
     try:
         obs = reset_env_to_demo_start(env, data_path, demo_name)
+        first_frame = comparison_observation_frame(obs, assets, view_camera, policy_camera, panel_mode, args.width, args.height)
+        media_layout = "single" if first_frame.shape[1] == args.width else "comparison"
+        writer = FFmpegVideoWriter(mp4_path, first_frame.shape[1], first_frame.shape[0], args.fps)
         writer.start()
-        writer.write(comparison_observation_frame(obs, assets, args.camera, panel_mode, args.width, args.height))
+        writer.write(first_frame)
 
         for step in range(args.max_steps):
             state = torch.tensor(state_from_env_obs(obs, assets.obs_keys), dtype=torch.float32, device=device).unsqueeze(0)
@@ -1712,7 +1814,8 @@ def observe_rollout(args: argparse.Namespace) -> None:
             if assets.obs_mode == "image":
                 if assets.image_shape is None:
                     raise ValueError("image_shape is required for image rollouts")
-                image = image_from_env_obs(obs, assets.image_key, args.camera, assets.image_shape).to(device).unsqueeze(0)
+                image_key = env_camera_key(policy_camera)
+                image = image_from_env_obs(obs, image_key, policy_camera, assets.image_shape).to(device).unsqueeze(0)
             with torch.no_grad():
                 pred, _, _ = assets.model(state, None, image=image)
             action = pred[0, 0] * assets.stats["action_std"] + assets.stats["action_mean"]
@@ -1721,14 +1824,15 @@ def observe_rollout(args: argparse.Namespace) -> None:
                 first_action = action_np.tolist()
             action_norms.append(float(np.linalg.norm(action_np)))
             obs, reward, done, info = env.step(action_np)
-            writer.write(comparison_observation_frame(obs, assets, args.camera, panel_mode, args.width, args.height))
+            writer.write(comparison_observation_frame(obs, assets, view_camera, policy_camera, panel_mode, args.width, args.height))
             total_reward += reward
             steps = step + 1
             success = bool(info.get("success", False) or getattr(env, "_check_success", lambda: False)())
             if done or success:
                 break
     finally:
-        writer.close()
+        if writer is not None:
+            writer.close()
         env.close()
 
     if gif_path is not None:
@@ -1744,6 +1848,9 @@ def observe_rollout(args: argparse.Namespace) -> None:
         "video": str(mp4_path),
         "gif": str(gif_path) if gif_path is not None else None,
         "panel_mode": panel_mode,
+        "view_camera": view_camera,
+        "policy_camera": policy_camera,
+        "media_layout": media_layout,
         "first_action": first_action,
         "mean_action_norm": float(np.mean(action_norms)) if action_norms else 0.0,
         "max_action_norm": float(np.max(action_norms)) if action_norms else 0.0,
@@ -1963,7 +2070,7 @@ def main() -> None:
     ro.add_argument("--fps", type=int, default=20)
     ro.add_argument("--max-steps", type=int, default=100)
 
-    ob = sub.add_parser("observe-rollout", help="save rollout camera beside the policy input representation")
+    ob = sub.add_parser("observe-rollout", help="save rollout media with the policy input representation")
     ob.add_argument("--checkpoint", required=True)
     ob.add_argument("--data", required=True)
     ob.add_argument("--out-dir", default="runs/observe_rollout")
@@ -1972,7 +2079,8 @@ def main() -> None:
     ob.add_argument("--device", default="cpu")
     ob.add_argument("--demo-index", type=int, default=0, help="which demonstration initial state to start from")
     ob.add_argument("--panel-mode", choices=["auto", "image", "low_dim"], default="auto")
-    ob.add_argument("--camera", default="agentview")
+    ob.add_argument("--camera", default=None, help="policy-input camera for image checkpoints; defaults to the dataset image key")
+    ob.add_argument("--view-camera", default=None, help="rollout media camera; defaults to the policy-input camera")
     ob.add_argument("--width", type=int, default=256)
     ob.add_argument("--height", type=int, default=256)
     ob.add_argument("--fps", type=int, default=20)

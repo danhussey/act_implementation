@@ -132,9 +132,27 @@ def test_observation_comparison_frame_can_render_lowdim_policy_input() -> None:
         },
     )
 
-    frame = act.comparison_observation_frame(obs, assets, "agentview", "auto", width=64, height=48)
+    frame = act.comparison_observation_frame(obs, assets, "agentview", "agentview", "auto", width=96, height=96)
 
-    assert frame.shape == (48 + act.PANEL_TITLE_HEIGHT, 128, 3)
+    assert frame.shape == (96 + act.PANEL_TITLE_HEIGHT, 192, 3)
+    assert frame.dtype == np.uint8
+
+
+def test_observation_frame_does_not_duplicate_matching_image_policy_camera() -> None:
+    obs = {
+        "agentview_image": np.zeros((8, 8, 3), dtype=np.uint8),
+    }
+    assets = SimpleNamespace(
+        obs_mode="image",
+        image_key="agentview_image",
+        image_shape=(3, 8, 8),
+        obs_keys=[],
+        stats={},
+    )
+
+    frame = act.comparison_observation_frame(obs, assets, "agentview", "agentview", "auto", width=64, height=48)
+
+    assert frame.shape == (48 + act.PANEL_TITLE_HEIGHT, 64, 3)
     assert frame.dtype == np.uint8
 
 
