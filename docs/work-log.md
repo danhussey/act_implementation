@@ -47,3 +47,5 @@ artifacts, and next questions by day.
 - README graphics iteration: hand-authored SVGs clipped text in GitHub rendering, so they were replaced with Mermaid diagrams. Mermaid keeps the visuals deterministic and reviewable without manual coordinate tuning.
 - Can smoke baseline eval: 1-epoch checkpoint got 1/20 successes (`5%`) with `--max-steps 200`; metrics at `runs/can_mps_smoke_20260511/eval_20_z0_h200/eval_metrics.json`.
 - README now includes compact rollout GIFs generated from saved MP4s: lift 3-epoch failure vs 20-minute success on `demo_10`, and can 1-epoch failure vs 6-hour final success on `demo_1`.
+- Started vision ACT path on branch `codex/vision-encoder`: image-mode training uses `agentview_image` plus robot proprioception and excludes the privileged `object` state vector.
+- Added comparison knobs for `scratch_cnn` versus optional pretrained frozen `resnet18`; next useful metric is rollout success against the existing low-dim baseline, not just validation loss.

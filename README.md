@@ -15,21 +15,24 @@ policy, roll it out in robosuite, save MP4s, and inspect the training curves.
 
 ## How The Demo Works
 
-Training uses expert demonstrations: at each timestep the dataset contains the
-robot/object state and the action the expert took. ACT learns to predict a
-short chunk of future actions from the current state. Evaluation is different:
-the learned policy controls the simulator step by step, and we count whether
-the task actually succeeds.
+Training uses expert demonstrations: at each timestep the dataset contains an
+observation and the action the expert took. In low-dimensional mode, the
+observation includes privileged simulator state such as object pose. In image
+mode, the policy gets a camera frame plus robot proprioception and has to infer
+object pose from pixels. ACT learns to predict a short chunk of future actions
+from the current observation. Evaluation is different: the learned policy
+controls the simulator step by step, and we count whether the task actually
+succeeds.
 
 ```mermaid
 flowchart TD
     demos["1. Load expert demos<br/>robomimic HDF5 files"]
-    samples["2. Build training samples<br/>current state -> next action chunk"]
-    train["3. Train ACT policy<br/>predict chunk, compare to expert chunk"]
+    samples["2. Build training samples<br/>observation -> next action chunk"]
+    train["3. Train ACT policy<br/>low-dim MLP or image CNN encoder"]
     checkpoints["4. Save checkpoints<br/>best validation loss + final model"]
     rollout["5. Roll out in simulator<br/>policy controls robot step by step"]
     score["6. Score behavior<br/>success count, rewards, MP4/GIF clips"]
-    note["Current simplification<br/>object pose is provided as numbers;<br/>camera vision is not used yet"]
+    note["Comparison knob<br/>low_dim gets object pose;<br/>image mode must infer it"]
 
     demos --> samples --> train --> checkpoints --> rollout --> score
     note -.-> samples
@@ -51,17 +54,19 @@ flowchart TD
 - A compact Action Chunking Transformer-style policy that predicts chunks of
   future robot actions.
 - A CVAE-style latent path for multimodal action chunks.
-- A robomimic low-dimensional demo pipeline using public `lift-ph` and `can-ph`
+- A robomimic low-dimensional baseline using public `lift-ph` and `can-ph`
   datasets.
+- An experimental image-observation path for comparing a scratch CNN encoder
+  against a frozen pretrained ResNet-18 encoder.
 - Local observability: `metrics.json`, `history.jsonl`, `loss_curve.svg`,
   rollout metrics, and MP4 videos.
 
 ## What This Is Not
 
-This repo currently trains from privileged low-dimensional simulator state, not
-camera images. That keeps the demo practical on a laptop and makes the ACT
-training loop easy to understand. A vision-based ACT would need image
-observations plus a visual encoder.
+The strong results below are from privileged low-dimensional simulator state.
+That keeps the ACT training loop practical on a laptop, but the policy is
+"cheating" compared with a camera-only object pose estimate. The image path is
+there to make that gap visible, not to claim state-of-the-art vision imitation.
 
 ## Recent Results
 
@@ -158,6 +163,62 @@ uv run python act.py train \
 
 Use `--device cpu` if you are not on Apple Silicon. Use `--device cuda` if your
 PyTorch install has CUDA support.
+
+## Vision Mode
+
+The first vision experiment should be `lift-ph-image` with the scratch CNN. It
+uses `agentview_image` plus robot proprioception and deliberately excludes the
+privileged robomimic `object` state vector.
+
+```bash
+uv run python act.py download --dataset lift-ph-image
+```
+
+Train the scratch-CNN version:
+
+```bash
+uv run python act.py train \
+  --data data/lift_ph_image.hdf5 \
+  --out runs/lift_vision_scratch \
+  --obs-mode image \
+  --vision-backbone scratch_cnn \
+  --epochs 3 \
+  --batch-size 64 \
+  --device mps
+```
+
+Evaluate it the same way as the low-dimensional checkpoint:
+
+```bash
+uv run python act.py evaluate \
+  --checkpoint runs/lift_vision_scratch/best.pt \
+  --data data/lift_ph_image.hdf5 \
+  --out-dir runs/lift_vision_scratch_eval \
+  --episodes 20 \
+  --videos 3 \
+  --device mps
+```
+
+For the pretrained comparison, install the optional vision extra and freeze a
+pretrained ResNet-18 image encoder:
+
+```bash
+uv sync --group dev --extra vision
+
+uv run --extra vision python act.py train \
+  --data data/lift_ph_image.hdf5 \
+  --out runs/lift_vision_resnet18_frozen \
+  --obs-mode image \
+  --vision-backbone resnet18 \
+  --vision-pretrained \
+  --freeze-vision \
+  --epochs 3 \
+  --batch-size 64 \
+  --device mps
+```
+
+The useful comparison is not just loss. Run the same rollout evaluation for
+both checkpoints and compare success rate, failure modes, and MP4/GIF clips.
 
 ## Roll Out A Policy
 
