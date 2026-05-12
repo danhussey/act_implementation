@@ -13,27 +13,35 @@ This is meant to be a friendly demo project: compact enough to read in one
 sitting, but real enough to download public robot data, train a transformer
 policy, roll it out in robosuite, save MP4s, and inspect the training curves.
 
+## How The Demo Works
+
+Training uses expert demonstrations: at each timestep the dataset contains the
+robot/object state and the action the expert took. ACT learns to predict a
+short chunk of future actions from the current state. Evaluation is different:
+the learned policy controls the simulator step by step, and we count whether
+the task actually succeeds.
+
 ```mermaid
-flowchart LR
-    data["robomimic HDF5 demos<br/>low-dimensional state + actions"]
-    loader["PyTorch Dataset + DataLoader<br/>sample batched action chunks"]
-    policy["ACT policy<br/>CVAE latent z + transformer decoder"]
-    rollout["robosuite rollout<br/>closed-loop task attempts"]
-    artifacts["metrics + MP4s<br/>history, curves, videos"]
-    note["key simplification<br/>state is given, vision is not"]
+flowchart TD
+    demos["1. Load expert demos<br/>robomimic HDF5 files"]
+    samples["2. Build training samples<br/>current state -> next action chunk"]
+    train["3. Train ACT policy<br/>predict chunk, compare to expert chunk"]
+    checkpoints["4. Save checkpoints<br/>best validation loss + final model"]
+    rollout["5. Roll out in simulator<br/>policy controls robot step by step"]
+    score["6. Score behavior<br/>success count, rewards, MP4/GIF clips"]
+    note["Current simplification<br/>object pose is provided as numbers;<br/>camera vision is not used yet"]
 
-    data --> loader --> policy --> rollout --> artifacts
-    note -.-> data
-    artifacts -. "rollout success is the real selector" .-> policy
+    demos --> samples --> train --> checkpoints --> rollout --> score
+    note -.-> samples
 
-    classDef input fill:#fff4d8,stroke:#d5a947,color:#1f2c24
+    classDef data fill:#fff4d8,stroke:#d5a947,color:#1f2c24
     classDef model fill:#e8f1ff,stroke:#6684c7,color:#1f2c24
     classDef eval fill:#e8f7ed,stroke:#4f9a66,color:#1f2c24
     classDef callout fill:#fffaf0,stroke:#d8c58a,color:#1f2c24,stroke-dasharray:5 4
 
-    class data,loader input
-    class policy model
-    class rollout,artifacts eval
+    class demos,samples data
+    class train,checkpoints model
+    class rollout,score eval
     class note callout
 ```
 
@@ -58,35 +66,70 @@ observations plus a visual encoder.
 ## Recent Results
 
 These numbers are from deterministic `z=0` rollouts started from demonstration
-initial simulator states.
+initial simulator states. For ACT's CVAE latent, `z=0` means "do not sample a
+random behavior style; use the center of the latent space."
 
 ```mermaid
-flowchart LR
-    lift["Lift<br/>18 / 20 success<br/>20 min, best.pt, horizon 100"]
-    can["Can<br/>18 / 20 success<br/>6 hr, last.pt, horizon 200"]
-    lesson["Lesson<br/>validation loss helps debug<br/>rollout success chooses the policy"]
+flowchart TD
+    subgraph liftTask["Lift task"]
+        direction LR
+        liftEarly["3 epochs<br/>14/20"]
+        liftMid["20 epochs<br/>10/20"]
+        liftLong["20 minutes<br/>18/20"]
+        liftEarly --> liftMid --> liftLong
+    end
 
-    lift --> lesson
-    can --> lesson
+    subgraph canTask["Can task"]
+        direction LR
+        canSmoke["1 epoch smoke<br/>1/20"]
+        canBest["6 hr validation-best<br/>7/20"]
+        canLast["6 hr final<br/>18/20"]
+        canSmoke --> canBest --> canLast
+    end
 
-    classDef result fill:#ecfff2,stroke:#2f855a,color:#1f2c24
-    classDef insight fill:#fff7df,stroke:#c9972b,color:#1f2c24
+    classDef weak fill:#fff1f1,stroke:#c05656,color:#1f2c24
+    classDef mid fill:#fff7df,stroke:#c9972b,color:#1f2c24
+    classDef strong fill:#ecfff2,stroke:#2f855a,color:#1f2c24
 
-    class lift,can result
-    class lesson insight
+    class liftEarly,canSmoke weak
+    class liftMid,canBest mid
+    class liftLong,canLast strong
 ```
 
-| Task | Data | Training | Checkpoint | Horizon | Success |
-| --- | ---: | ---: | --- | ---: | ---: |
-| `lift-ph` | 20 demos | 20 min | `best.pt` | 100 | 18/20 |
-| `can-ph` | 200 demos | 6 hr | `last.pt` | 200 | 18/20 |
+| Task | Run | Checkpoint | Horizon | Success | Readout |
+| --- | --- | --- | ---: | ---: | --- |
+| `lift-ph` | 3 epochs | `best.pt` | 100 | 14/20 | Minimal training already learns some behavior from low-dim state. |
+| `lift-ph` | 20 epochs | `best.pt` | 100 | 10/20 | Better validation loss, worse closed-loop behavior. |
+| `lift-ph` | 20 minutes | `best.pt` | 100 | 18/20 | Strongest lift run so far. |
+| `can-ph` | 1 epoch smoke | `best.pt` | 200 | 1/20 | Barely trained baseline. |
+| `can-ph` | 6 hr validation-best | `best.pt` | 200 | 7/20 | Lowest validation loss checkpoint was not the best actor. |
+| `can-ph` | 6 hr final | `last.pt` | 200 | 18/20 | Strongest can run so far. |
+
+Here, "validation-best" means the checkpoint with the lowest supervised loss on
+held-out expert action chunks. "Final" means the checkpoint from the end of the
+training run. The can result is a useful warning: the model that best matches
+held-out action chunks is not always the model that completes the task most
+often when it controls the simulator.
 
 Two useful lessons showed up quickly:
 
-- Supervised validation loss is helpful, but closed-loop rollout success is the
-  real metric.
+- Supervised validation loss is useful for debugging whether the model is
+  learning from demonstrations.
+- Closed-loop rollout success answers the more important demo question: can the
+  policy actually complete the task when its own actions affect the next state?
 - For `can-ph`, the validation-best checkpoint was not rollout-best. The final
   checkpoint had worse validation loss but much better policy behavior.
+
+## Rollout Clips
+
+These GIFs are generated from saved rollout MP4s. Each row uses the same task
+and the same demonstration start state, so the comparison is about the policy
+checkpoint, not a different initial scene.
+
+| Earlier checkpoint | Later checkpoint |
+| :---: | :---: |
+| **Lift demo_10, 3 epochs: fails**<br><img src="docs/assets/lift_demo10_3ep_failure.gif" alt="Lift rollout failure from the 3-epoch checkpoint" width="240"> | **Lift demo_10, 20 minutes: succeeds**<br><img src="docs/assets/lift_demo10_20min_success.gif" alt="Lift rollout success from the 20-minute checkpoint" width="240"> |
+| **Can demo_1, 1 epoch: fails**<br><img src="docs/assets/can_demo1_1ep_failure.gif" alt="Can rollout failure from the 1-epoch checkpoint" width="240"> | **Can demo_1, 6 hr final: succeeds**<br><img src="docs/assets/can_demo1_6hr_success.gif" alt="Can rollout success from the 6-hour final checkpoint" width="240"> |
 
 ## Quick Start
 

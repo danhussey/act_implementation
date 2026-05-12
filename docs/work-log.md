@@ -45,3 +45,5 @@ artifacts, and next questions by day.
 - Remaining final-checkpoint failures in the 20-start eval: `demo_0`, `demo_11`.
 - Artifacts: loss curve `runs/can_mps_6h_20260511/loss_curve.svg`; final-checkpoint eval `runs/can_mps_6h_20260511/eval_20_z0_h200_last/eval_metrics.json`; selected final videos in `runs/can_mps_6h_20260511/last_z0_selected/`.
 - README graphics iteration: hand-authored SVGs clipped text in GitHub rendering, so they were replaced with Mermaid diagrams. Mermaid keeps the visuals deterministic and reviewable without manual coordinate tuning.
+- Can smoke baseline eval: 1-epoch checkpoint got 1/20 successes (`5%`) with `--max-steps 200`; metrics at `runs/can_mps_smoke_20260511/eval_20_z0_h200/eval_metrics.json`.
+- README now includes compact rollout GIFs generated from saved MP4s: lift 3-epoch failure vs 20-minute success on `demo_10`, and can 1-epoch failure vs 6-hour final success on `demo_1`.
