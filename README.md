@@ -159,13 +159,13 @@ checkpoint, not a different initial scene.
 
 These clips show what the policy is actually conditioned on. The vision runs use
 `agentview_image`, so the rollout view and policy image are the same panel: if
-they are identical, the media does not duplicate them. The low-dimensional
-baseline is different, so it stays side-by-side: left is the rollout camera,
-right is a spatial sketch of the privileged simulator state.
+they are identical, the media does not duplicate them. For the low-dimensional
+baseline, the privileged state vector is not shown here for now; the clip is
+just the rollout animation.
 
 | Low-dim baseline | Scratch CNN | Frozen pretrained ResNet-18 |
 | :---: | :---: | :---: |
-| <img src="docs/assets/lift_lowdim_policy_view_demo10.gif" alt="Low-dimensional Lift policy rollout with normalized state panel" width="260"> | <img src="docs/assets/lift_scratchcnn_policy_view_demo10.gif" alt="Scratch-CNN Lift policy rollout with policy image panel" width="260"> | <img src="docs/assets/lift_resnet18_policy_view_demo10.gif" alt="Pretrained ResNet-18 Lift policy rollout with policy image panel" width="260"> |
+| <img src="docs/assets/lift_lowdim_agentview_demo10_v2.gif" alt="Low-dimensional Lift policy rollout animation" width="220"> | <img src="docs/assets/lift_scratchcnn_agentview_single_demo10_v2.gif" alt="Scratch-CNN Lift policy rollout using a single agentview policy-input panel" width="220"> | <img src="docs/assets/lift_resnet18_agentview_single_demo10_v2.gif" alt="Pretrained ResNet-18 Lift policy rollout using a single agentview policy-input panel" width="220"> |
 
 ## Quick Start
 

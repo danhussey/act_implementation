@@ -580,7 +580,7 @@ def comparison_observation_frame(
         raise KeyError(f"Camera '{view_camera}' not present in environment observation")
     camera_title = f"view: {view_camera}"
     if assets.obs_mode == "image" and mode == "image" and view_camera == policy_camera:
-        return np.ascontiguousarray(titled_panel(obs[frame_key][::-1], f"{view_camera}: rollout=input", width, height))
+        return np.ascontiguousarray(titled_panel(obs[frame_key][::-1], f"policy input: {view_camera}", width, height))
     camera_panel = titled_panel(obs[frame_key][::-1], camera_title, width, height)
     input_panel = policy_input_panel(obs, assets, policy_camera, panel_mode, width, height)
     return np.ascontiguousarray(np.concatenate([camera_panel, input_panel], axis=1))

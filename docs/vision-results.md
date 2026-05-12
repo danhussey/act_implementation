@@ -51,9 +51,9 @@ late probe still caught a real degradation risk.
 - Latest rollout MP4s:
   `runs/lift_vision_scratch_continue2_rollout_20260512/eval_20_z0_last/videos/`
 - Observation GIFs:
-  `docs/assets/lift_lowdim_policy_view_demo10.gif`,
-  `docs/assets/lift_scratchcnn_policy_view_demo10.gif`,
-  `docs/assets/lift_resnet18_policy_view_demo10.gif`
+  `docs/assets/lift_lowdim_agentview_demo10_v2.gif`,
+  `docs/assets/lift_scratchcnn_agentview_single_demo10_v2.gif`,
+  `docs/assets/lift_resnet18_agentview_single_demo10_v2.gif`
 - Latest rollout curve:
   `runs/lift_vision_scratch_continue2_rollout_20260512/rollout_curve.svg`
 - Pretrained rollout curve:
