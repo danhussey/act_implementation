@@ -51,6 +51,7 @@ DATASETS = {
         "path": "data/can_ph_image.hdf5",
     },
 }
+PANEL_TITLE_HEIGHT = 28
 
 
 # Expected robomimic low-dim HDF5 shape:
@@ -301,6 +302,208 @@ class FFmpegVideoWriter:
         self.process = None
         if code != 0:
             raise RuntimeError(stderr.decode("utf-8", errors="replace"))
+
+
+def require_pillow():
+    """Import Pillow lazily for optional media annotation commands."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ImportError as exc:
+        raise RuntimeError("Pillow is required for observe-rollout media; install it or use the vision extra") from exc
+    return Image, ImageDraw, ImageFont
+
+
+def rgb_uint8(image: np.ndarray) -> np.ndarray:
+    """Return a contiguous HWC RGB uint8 array."""
+    array = np.asarray(image)
+    if array.ndim != 3:
+        raise ValueError(f"Expected HWC or CHW image, got shape {array.shape}")
+    if array.shape[0] in (1, 3, 4) and array.shape[-1] not in (1, 3, 4):
+        array = array[:3].transpose(1, 2, 0)
+    elif array.shape[-1] in (1, 3, 4):
+        array = array[..., :3]
+    else:
+        raise ValueError(f"Could not infer RGB channels from shape {array.shape}")
+    if array.dtype != np.uint8:
+        if np.nanmax(array) <= 1.5:
+            array = array * 255.0
+        array = np.clip(array, 0, 255).astype(np.uint8)
+    return np.ascontiguousarray(array)
+
+
+def resize_rgb(image: np.ndarray, width: int, height: int) -> np.ndarray:
+    """Resize an RGB frame with Pillow."""
+    Image, _, _ = require_pillow()
+    pil = Image.fromarray(rgb_uint8(image))
+    return np.asarray(pil.resize((width, height), Image.Resampling.BILINEAR)).copy()
+
+
+def font_default():
+    """Return a small Pillow font for labels."""
+    _, _, ImageFont = require_pillow()
+    return ImageFont.load_default()
+
+
+def titled_panel(image: np.ndarray, title: str, width: int, height: int) -> np.ndarray:
+    """Resize an image and add a compact title bar."""
+    Image, ImageDraw, _ = require_pillow()
+    resized = resize_rgb(image, width, height)
+    canvas = Image.new("RGB", (width, height + PANEL_TITLE_HEIGHT), (20, 31, 28))
+    canvas.paste(Image.fromarray(resized), (0, PANEL_TITLE_HEIGHT))
+    draw = ImageDraw.Draw(canvas)
+    draw.text((8, 8), title, fill=(245, 240, 226), font=font_default())
+    return np.asarray(canvas).copy()
+
+
+def color_for_obs_key(key: str) -> tuple[int, int, int]:
+    """Stable colors for low-dimensional observation groups."""
+    if "object" in key:
+        return (228, 153, 51)
+    if "gripper" in key:
+        return (47, 133, 90)
+    if "eef" in key:
+        return (49, 130, 206)
+    if "joint" in key:
+        return (108, 117, 125)
+    return (93, 92, 222)
+
+
+def state_parts_from_env_obs(obs: dict[str, np.ndarray], keys: list[str]) -> tuple[np.ndarray, list[tuple[str, int, int]]]:
+    """Return raw state values plus source-key spans for visualization."""
+    values = []
+    spans = []
+    cursor = 0
+    for key in keys:
+        source_key = key
+        if source_key not in obs and source_key == "object" and "object-state" in obs:
+            source_key = "object-state"
+        if source_key not in obs:
+            raise KeyError(f"Environment observation is missing expected key '{key}'")
+        part = np.asarray(obs[source_key], dtype=np.float32).reshape(-1)
+        values.append(part)
+        spans.append((key, cursor, cursor + len(part)))
+        cursor += len(part)
+    return np.concatenate(values).astype(np.float32), spans
+
+
+def lowdim_state_panel(
+    obs: dict[str, np.ndarray],
+    obs_keys: list[str],
+    stats: dict[str, torch.Tensor],
+    width: int,
+    height: int,
+) -> np.ndarray:
+    """Render the privileged low-dimensional state as a normalized bar panel."""
+    Image, ImageDraw, _ = require_pillow()
+    raw, spans = state_parts_from_env_obs(obs, obs_keys)
+    mean = stats["state_mean"].detach().cpu().numpy()
+    std = stats["state_std"].detach().cpu().numpy()
+    normalized = np.clip((raw - mean) / std, -3.0, 3.0)
+
+    image = Image.new("RGB", (width, height), (248, 246, 239))
+    draw = ImageDraw.Draw(image)
+    font = font_default()
+    draw.text((8, 8), "normalized policy state", fill=(31, 41, 55), font=font)
+    draw.text((8, height - 18), "bars clipped to +/-3 std", fill=(85, 94, 106), font=font)
+
+    left, right, top, bottom = 12, 12, 32, 28
+    plot_w = width - left - right
+    plot_h = height - top - bottom
+    mid_y = top + plot_h // 2
+    draw.line((left, mid_y, width - right, mid_y), fill=(107, 114, 128), width=1)
+    draw.line((left, top, width - right, top), fill=(229, 231, 235), width=1)
+    draw.line((left, top + plot_h, width - right, top + plot_h), fill=(229, 231, 235), width=1)
+
+    count = max(1, len(normalized))
+    slot = plot_w / count
+    bar_w = max(1, int(slot * 0.72))
+    key_for_index = []
+    for key, start, end in spans:
+        key_for_index.extend([key] * (end - start))
+    for index, value in enumerate(normalized):
+        x0 = int(left + index * slot + (slot - bar_w) / 2)
+        x1 = max(x0 + 1, x0 + bar_w)
+        y = int(mid_y - value / 3.0 * (plot_h / 2))
+        color = color_for_obs_key(key_for_index[index])
+        if value >= 0:
+            draw.rectangle((x0, min(y, mid_y), x1, max(y, mid_y)), fill=color)
+        else:
+            draw.rectangle((x0, min(y, mid_y), x1, max(y, mid_y)), fill=color)
+
+    legend_x = width - 128
+    legend = [
+        ("robot/eef", color_for_obs_key("robot0_eef_pos")),
+        ("gripper", color_for_obs_key("robot0_gripper_qpos")),
+        ("object", color_for_obs_key("object")),
+    ]
+    for row, (label, color) in enumerate(legend):
+        y = 8 + row * 12
+        draw.rectangle((legend_x, y + 2, legend_x + 8, y + 10), fill=color)
+        draw.text((legend_x + 12, y), label, fill=(31, 41, 55), font=font)
+    return np.asarray(image).copy()
+
+
+def write_gif_from_mp4(mp4_path: Path, gif_path: Path, fps: int, width: int) -> None:
+    """Convert an mp4 to a compact GIF using ffmpeg."""
+    if shutil.which("ffmpeg") is None:
+        raise RuntimeError("ffmpeg is required for GIF output but was not found on PATH")
+    gif_path.parent.mkdir(parents=True, exist_ok=True)
+    scale = f"scale={width}:-1:flags=lanczos" if width > 0 else "scale=iw:ih:flags=lanczos"
+    filters = f"fps={fps},{scale}"
+    palette_path = gif_path.with_suffix(".palette.png")
+    try:
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(mp4_path), "-vf", f"{filters},palettegen", str(palette_path)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        subprocess.run(
+            ["ffmpeg", "-y", "-i", str(mp4_path), "-i", str(palette_path), "-filter_complex", f"{filters}[x];[x][1:v]paletteuse", str(gif_path)],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    finally:
+        palette_path.unlink(missing_ok=True)
+
+
+def policy_input_panel(
+    obs: dict[str, np.ndarray],
+    assets: "RolloutAssets",
+    camera: str,
+    panel_mode: str,
+    width: int,
+    height: int,
+) -> np.ndarray:
+    """Render the observation representation consumed by the policy."""
+    mode = assets.obs_mode if panel_mode == "auto" else panel_mode
+    if mode == "image":
+        if assets.image_shape is None:
+            raise ValueError("Image panel requested for a checkpoint without image observations")
+        image = image_from_env_obs(obs, assets.image_key, camera, assets.image_shape)
+        return titled_panel(image.detach().cpu().numpy(), "policy input: image (+proprio)", width, height)
+    if mode == "low_dim":
+        panel = lowdim_state_panel(obs, assets.obs_keys, assets.stats, width, height)
+        return titled_panel(panel, "policy input: normalized low-dim state", width, height)
+    raise ValueError(f"Unknown panel mode '{panel_mode}'")
+
+
+def comparison_observation_frame(
+    obs: dict[str, np.ndarray],
+    assets: "RolloutAssets",
+    camera: str,
+    panel_mode: str,
+    width: int,
+    height: int,
+) -> np.ndarray:
+    """Build one side-by-side observation comparison frame."""
+    frame_key = f"{camera}_image"
+    if frame_key not in obs:
+        raise KeyError(f"Camera '{camera}' not present in environment observation")
+    camera_panel = titled_panel(obs[frame_key][::-1], "simulator rollout camera", width, height)
+    input_panel = policy_input_panel(obs, assets, camera, panel_mode, width, height)
+    return np.ascontiguousarray(np.concatenate([camera_panel, input_panel], axis=1))
 
 
 class DemoDataset(Dataset):
@@ -1186,7 +1389,9 @@ def make_env_from_meta(env_meta: dict, camera: str, width: int, height: int, hor
             "has_renderer": False,
             "has_offscreen_renderer": True,
             "use_camera_obs": True,
-            "use_object_obs": False,
+            # Vision checkpoints exclude object state through obs_keys, but
+            # low-dim checkpoints still need object-state in live rollouts.
+            "use_object_obs": True,
             "camera_names": [camera],
             "camera_widths": width,
             "camera_heights": height,
@@ -1470,6 +1675,84 @@ def rollout(args: argparse.Namespace) -> None:
     print(json.dumps(summary, indent=2))
 
 
+def observe_rollout(args: argparse.Namespace) -> None:
+    """Save a rollout video beside the policy observation representation."""
+    device = torch.device(args.device)
+    checkpoint_path = Path(args.checkpoint)
+    data_path = Path(args.data)
+    out_dir = Path(args.out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    assets = load_rollout_assets(checkpoint_path, data_path, device)
+    with h5py.File(data_path, "r") as f:
+        demos = sorted_demo_keys(f["data"].keys())
+    demo_name = demos[args.demo_index]
+
+    panel_mode = assets.obs_mode if args.panel_mode == "auto" else args.panel_mode
+    stem = f"demo_{args.demo_index:03d}_{panel_mode}"
+    mp4_path = Path(args.out_mp4) if args.out_mp4 else out_dir / f"{stem}.mp4"
+    gif_path = None if args.no_gif else (Path(args.out_gif) if args.out_gif else out_dir / f"{stem}.gif")
+
+    env = make_robosuite_env(data_path, args.camera, args.width, args.height, args.max_steps)
+    writer = FFmpegVideoWriter(mp4_path, args.width * 2, args.height + PANEL_TITLE_HEIGHT, args.fps)
+    total_reward = 0.0
+    success = False
+    steps = 0
+    first_action = None
+    action_norms = []
+    try:
+        obs = reset_env_to_demo_start(env, data_path, demo_name)
+        writer.start()
+        writer.write(comparison_observation_frame(obs, assets, args.camera, panel_mode, args.width, args.height))
+
+        for step in range(args.max_steps):
+            state = torch.tensor(state_from_env_obs(obs, assets.obs_keys), dtype=torch.float32, device=device).unsqueeze(0)
+            state = (state - assets.stats["state_mean"]) / assets.stats["state_std"]
+            image = None
+            if assets.obs_mode == "image":
+                if assets.image_shape is None:
+                    raise ValueError("image_shape is required for image rollouts")
+                image = image_from_env_obs(obs, assets.image_key, args.camera, assets.image_shape).to(device).unsqueeze(0)
+            with torch.no_grad():
+                pred, _, _ = assets.model(state, None, image=image)
+            action = pred[0, 0] * assets.stats["action_std"] + assets.stats["action_mean"]
+            action_np = action.detach().cpu().numpy()
+            if first_action is None:
+                first_action = action_np.tolist()
+            action_norms.append(float(np.linalg.norm(action_np)))
+            obs, reward, done, info = env.step(action_np)
+            writer.write(comparison_observation_frame(obs, assets, args.camera, panel_mode, args.width, args.height))
+            total_reward += reward
+            steps = step + 1
+            success = bool(info.get("success", False) or getattr(env, "_check_success", lambda: False)())
+            if done or success:
+                break
+    finally:
+        writer.close()
+        env.close()
+
+    if gif_path is not None:
+        write_gif_from_mp4(mp4_path, gif_path, args.gif_fps, args.gif_width)
+
+    summary = {
+        "checkpoint": str(checkpoint_path),
+        "data": str(data_path),
+        "demo": demo_name,
+        "steps": steps,
+        "reward": total_reward,
+        "success": success,
+        "video": str(mp4_path),
+        "gif": str(gif_path) if gif_path is not None else None,
+        "panel_mode": panel_mode,
+        "first_action": first_action,
+        "mean_action_norm": float(np.mean(action_norms)) if action_norms else 0.0,
+        "max_action_norm": float(np.max(action_norms)) if action_norms else 0.0,
+    }
+    metrics_path = out_dir / "observe_metrics.json"
+    metrics_path.write_text(json.dumps(summary, indent=2))
+    print(json.dumps(summary | {"metrics": str(metrics_path)}, indent=2))
+
+
 def evaluate(args: argparse.Namespace) -> None:
     """Run multiple rollouts and write success-rate metrics plus sample videos."""
     device = torch.device(args.device)
@@ -1680,6 +1963,24 @@ def main() -> None:
     ro.add_argument("--fps", type=int, default=20)
     ro.add_argument("--max-steps", type=int, default=100)
 
+    ob = sub.add_parser("observe-rollout", help="save rollout camera beside the policy input representation")
+    ob.add_argument("--checkpoint", required=True)
+    ob.add_argument("--data", required=True)
+    ob.add_argument("--out-dir", default="runs/observe_rollout")
+    ob.add_argument("--out-mp4", default=None)
+    ob.add_argument("--out-gif", default=None)
+    ob.add_argument("--device", default="cpu")
+    ob.add_argument("--demo-index", type=int, default=0, help="which demonstration initial state to start from")
+    ob.add_argument("--panel-mode", choices=["auto", "image", "low_dim"], default="auto")
+    ob.add_argument("--camera", default="agentview")
+    ob.add_argument("--width", type=int, default=256)
+    ob.add_argument("--height", type=int, default=256)
+    ob.add_argument("--fps", type=int, default=20)
+    ob.add_argument("--gif-fps", type=int, default=8)
+    ob.add_argument("--gif-width", type=int, default=640)
+    ob.add_argument("--max-steps", type=int, default=100)
+    ob.add_argument("--no-gif", action="store_true")
+
     ev = sub.add_parser("evaluate", help="run many policy rollouts and write metrics plus sample mp4s")
     ev.add_argument("--checkpoint", required=True)
     ev.add_argument("--data", required=True)
@@ -1727,6 +2028,8 @@ def main() -> None:
         train(args)
     elif args.cmd == "rollout":
         rollout(args)
+    elif args.cmd == "observe-rollout":
+        observe_rollout(args)
     elif args.cmd == "plot-history":
         plot_history(args)
     elif args.cmd == "evaluate":

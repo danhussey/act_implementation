@@ -21,6 +21,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "h5py" },
     { name = "numpy" },
+    { name = "pillow" },
     { name = "robosuite" },
     { name = "torch" },
     { name = "tqdm" },
@@ -40,6 +41,7 @@ dev = [
 requires-dist = [
     { name = "h5py", specifier = ">=3.14.0" },
     { name = "numpy", specifier = ">=2.3.3" },
+    { name = "pillow", specifier = ">=10.0.0" },
     { name = "robosuite", specifier = ">=1.5.1" },
     { name = "torch", specifier = ">=2.8.0" },
     { name = "torchvision", marker = "extra == 'vision'", specifier = ">=0.24.0" },

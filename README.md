@@ -89,7 +89,9 @@ flowchart TD
         visionSmoke["scratch CNN 20 epochs<br/>10/20"]
         visionFirst["scratch CNN +20 min<br/>14/20"]
         visionLong["scratch CNN +40 min<br/>17/20"]
+        visionResnet["frozen pretrained ResNet-18<br/>16/20"]
         visionSmoke --> visionFirst --> visionLong
+        visionSmoke --> visionResnet
     end
 
     subgraph canTask["Can task"]
@@ -106,7 +108,7 @@ flowchart TD
 
     class liftEarly,canSmoke weak
     class liftMid,canBest,visionSmoke mid
-    class liftLong,canLast,visionFirst,visionLong strong
+    class liftLong,canLast,visionFirst,visionLong,visionResnet strong
 ```
 
 | Task | Run | Checkpoint | Horizon | Success | Readout |
@@ -116,6 +118,7 @@ flowchart TD
 | `lift-ph` | low-dim 20 minutes | `best.pt` | 100 | 18/20 | Strongest privileged-state Lift run so far. |
 | `lift-ph-image` | scratch CNN, 20 epochs | `best.pt` | 100 | 10/20 | First high-dimensional baseline from pixels plus proprioception. |
 | `lift-ph-image` | scratch CNN, +40 minutes | `last.pt` | 100 | 17/20 | Best vision run so far, close to the low-dim baseline. |
+| `lift-ph-image` | frozen pretrained ResNet-18, 20 minutes | `best.pt` | 100 | 16/20 | Faster strong start, but late rollout probes degraded. |
 | `can-ph` | 1 epoch smoke | `best.pt` | 200 | 1/20 | Barely trained baseline. |
 | `can-ph` | 6 hr validation-best | `best.pt` | 200 | 7/20 | Lowest validation loss checkpoint was not the best actor. |
 | `can-ph` | 6 hr final | `last.pt` | 200 | 18/20 | Strongest can run so far. |
@@ -147,6 +150,17 @@ checkpoint, not a different initial scene.
 | :---: | :---: |
 | **Lift demo_10, 3 epochs: fails**<br><img src="docs/assets/lift_demo10_3ep_failure.gif" alt="Lift rollout failure from the 3-epoch checkpoint" width="240"> | **Lift demo_10, 20 minutes: succeeds**<br><img src="docs/assets/lift_demo10_20min_success.gif" alt="Lift rollout success from the 20-minute checkpoint" width="240"> |
 | **Can demo_1, 1 epoch: fails**<br><img src="docs/assets/can_demo1_1ep_failure.gif" alt="Can rollout failure from the 1-epoch checkpoint" width="240"> | **Can demo_1, 6 hr final: succeeds**<br><img src="docs/assets/can_demo1_6hr_success.gif" alt="Can rollout success from the 6-hour final checkpoint" width="240"> |
+
+## What The Policy Sees
+
+These clips show the simulator camera beside the policy input representation.
+For vision policies, the right panel is the image tensor fed to the CNN/ResNet
+encoder. For the low-dimensional baseline, the right panel is normalized
+privileged simulator state; that is why the low-dim model is easier.
+
+| Low-dim baseline | Scratch CNN | Frozen pretrained ResNet-18 |
+| :---: | :---: | :---: |
+| <img src="docs/assets/lift_lowdim_policy_view_demo10.gif" alt="Low-dimensional Lift policy rollout with normalized state panel" width="260"> | <img src="docs/assets/lift_scratchcnn_policy_view_demo10.gif" alt="Scratch-CNN Lift policy rollout with policy image panel" width="260"> | <img src="docs/assets/lift_resnet18_policy_view_demo10.gif" alt="Pretrained ResNet-18 Lift policy rollout with policy image panel" width="260"> |
 
 ## Quick Start
 
@@ -278,10 +292,24 @@ Current local Lift comparison:
 | Scratch-CNN ACT, +20 min with rollout probes | `agentview_image` plus robot proprioception | `last.pt` | 14/20 successes |
 | Scratch-CNN ACT, +40 min with rollout probes | `agentview_image` plus robot proprioception | `best.pt` | 13/20 successes |
 | Scratch-CNN ACT, +40 min with rollout probes | `agentview_image` plus robot proprioception | `last.pt` | 17/20 successes |
+| Frozen pretrained ResNet-18 ACT, 20 min with rollout probes | `agentview_image` plus robot proprioception | `best.pt` | 16/20 successes |
+| Frozen pretrained ResNet-18 ACT, 20 min with rollout probes | `agentview_image` plus robot proprioception | `last.pt` | 16/20 successes |
 
 The scratch-CNN result is intentionally not presented as solved. It is the
 first high-dimensional baseline: less privileged than low-dim, clearly learning
 something, and currently more brittle.
+
+To inspect what a rollout is actually using as policy input, save a comparison
+MP4/GIF:
+
+```bash
+uv run python act.py observe-rollout \
+  --checkpoint runs/lift_vision_scratch/best.pt \
+  --data data/lift_ph_agentview_20demos.hdf5 \
+  --out-dir runs/lift_vision_scratch_observe \
+  --demo-index 10 \
+  --device mps
+```
 
 ## Roll Out A Policy
 

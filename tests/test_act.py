@@ -115,6 +115,29 @@ def test_image_mode_excludes_privileged_object_state(tmp_path: Path) -> None:
     assert dataset.image_shape == (3, 16, 16)
 
 
+def test_observation_comparison_frame_can_render_lowdim_policy_input() -> None:
+    obs = {
+        "agentview_image": np.zeros((8, 8, 3), dtype=np.uint8),
+        "robot0_eef_pos": np.array([0.0, 1.0, -1.0], dtype=np.float32),
+        "object-state": np.array([0.5, -0.5], dtype=np.float32),
+    }
+    assets = SimpleNamespace(
+        obs_mode="low_dim",
+        image_key="agentview_image",
+        image_shape=None,
+        obs_keys=["robot0_eef_pos", "object"],
+        stats={
+            "state_mean": torch.zeros(5),
+            "state_std": torch.ones(5),
+        },
+    )
+
+    frame = act.comparison_observation_frame(obs, assets, "agentview", "auto", width=64, height=48)
+
+    assert frame.shape == (48 + act.PANEL_TITLE_HEIGHT, 128, 3)
+    assert frame.dtype == np.uint8
+
+
 def test_plot_history_writes_rollout_curve_when_present(tmp_path: Path) -> None:
     run = tmp_path / "run"
     run.mkdir()

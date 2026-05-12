@@ -67,3 +67,10 @@ artifacts, and next questions by day.
 - Full 20-start eval after the second continuation: `last.pt` got 17/20 successes (`85%`), avg length `57.45`, failing `demo_1`, `demo_7`, and `demo_15`; `best.pt` got 13/20 (`65%`).
 - Current high-level result: the scratch-CNN vision model is now close to the low-dim Lift baseline on the same 20 rendered starts, but still uses only 20 demos and a simple scratch visual encoder.
 - README now surfaces the 17/20 vision result in the main results section, and `docs/vision-results.md` preserves the vision-run progression plus artifact paths.
+- Added `act.py observe-rollout` to save a rollout camera beside the actual policy input representation. Vision panels show the image tensor fed to the encoder; low-dim panels show normalized privileged state bars.
+- Low-dim observation GIF surprise: the shared robosuite env builder had `use_object_obs=False`, which broke live low-dim policies because `object-state` was absent. Fixed by enabling object observations in the env while continuing to exclude object state from vision `obs_keys`.
+- Frozen pretrained ResNet-18 Lift run: `runs/lift_vision_resnet18_frozen_20min_20260512`, 20 rendered demos, frozen ImageNet ResNet-18 image encoder, 312 epochs in `1203.1s`, best val loss `0.3343` at epoch 90.
+- ResNet in-training rollout probes: 0/10 before training, 9/10 at epoch 50, 8/10 at epochs 100/150/200/250, then 5/10 at epoch 300. This repeated the “loss is not the selector” pattern.
+- ResNet full eval: `best.pt` got 16/20 successes, failures `demo_0`, `demo_5`, `demo_9`, `demo_18`; `last.pt` also got 16/20, failures `demo_2`, `demo_3`, `demo_7`, `demo_13`.
+- Current comparison on Lift 20-start eval: low-dim baseline 18/20, scratch CNN final 17/20, frozen pretrained ResNet-18 best 16/20. Pretraining helped produce strong behavior quickly, but did not beat the longer scratch run.
+- Observation media artifacts: `docs/assets/lift_lowdim_policy_view_demo10.gif`, `docs/assets/lift_scratchcnn_policy_view_demo10.gif`, and `docs/assets/lift_resnet18_policy_view_demo10.gif`.
