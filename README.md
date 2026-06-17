@@ -1,4 +1,4 @@
-# ACT in One File
+# Action Chunking Transformer with Closed-Loop Robotics Evaluation
 
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-ACT%20demo-EE4C2C?logo=pytorch&logoColor=white)](https://pytorch.org/)
@@ -6,12 +6,19 @@
 [![uv](https://img.shields.io/badge/env-uv-4B32C3)](https://github.com/astral-sh/uv)
 [![tests](https://img.shields.io/badge/tests-pytest-0A7C66)](https://docs.pytest.org/)
 
-A small, readable PyTorch reimplementation of an ACT-style behavior cloning
-loop for robomimic demonstrations.
+Readable PyTorch implementation of an ACT-style behavior cloning loop for
+robomimic demonstrations, with closed-loop simulator rollout evaluation.
 
-This is meant to be a friendly demo project: compact enough to read in one
-sitting, but real enough to download public robot data, train a transformer
-policy, roll it out in robosuite, save MP4s, and inspect the training curves.
+The project is compact enough to read in one sitting, but real enough to
+download public robot data, train a transformer policy, roll it out in
+robosuite, save MP4s, and inspect training curves against task success.
+
+## Key Finding
+
+Supervised validation loss was a poor selector of closed-loop policy quality.
+On `can-ph`, the validation-best checkpoint reached 7/20 successes, while the
+final checkpoint reached 18/20. On vision Lift, the final checkpoint reached
+17/20, while the validation-best checkpoint reached 13/20.
 
 ## How The Demo Works
 
